@@ -1,13 +1,146 @@
-# app_combined_enhanced.py - 生物炭改性土SWCC预测系统（增强版）
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import pickle
-import matplotlib.pyplot as plt
-import io
 import warnings
+
 warnings.filterwarnings('ignore')
 
+# 导入plotly（对中文支持更好）
+import plotly.graph_objects as go
+import plotly.express as px
+
+# 页面配置
+st.set_page_config(
+    page_title="生物炭改性土SWCC预测系统",
+    page_icon="🌱",
+    layout="wide"
+)
+
+# 设置页面样式
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #2E8B57;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    .chinese-text {
+        font-family: "Microsoft YaHei", "SimHei", sans-serif;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# 应用标题
+st.markdown('<h1 class="main-header chinese-text">🌱 生物炭改性土持水特征曲线(SWCC)预测系统</h1>',
+            unsafe_allow_html=True)
+
+
+# 创建绘图函数
+def create_swcc_plot(suction_values, water_content_values, title="土水特征曲线"):
+    """创建SWCC曲线图"""
+    fig = go.Figure()
+
+    # 添加曲线
+    fig.add_trace(go.Scatter(
+        x=suction_values,
+        y=water_content_values,
+        mode='lines+markers',
+        name='SWCC',
+        line=dict(color='#2E8B57', width=3),
+        marker=dict(size=8, color='#3CB371'),
+        hovertemplate='吸力: %{x:.1f} kPa<br>含水率: %{y:.3f}<extra></extra>'
+    ))
+
+    # 设置布局
+    fig.update_layout(
+        title=dict(
+            text=title,
+            font=dict(size=24, family="Microsoft YaHei, SimHei, sans-serif"),
+            x=0.5
+        ),
+        xaxis=dict(
+            title=dict(
+                text="基质吸力 (kPa)",
+                font=dict(size=16, family="Microsoft YaHei, SimHei, sans-serif")
+            ),
+            type="log",
+            showgrid=True,
+            gridwidth=1,
+            gridcolor='LightGray',
+            tickfont=dict(size=12)
+        ),
+        yaxis=dict(
+            title=dict(
+                text="体积含水率",
+                font=dict(size=16, family="Microsoft YaHei, SimHei, sans-serif")
+            ),
+            showgrid=True,
+            gridwidth=1,
+            gridcolor='LightGray',
+            tickfont=dict(size=12)
+        ),
+        plot_bgcolor='rgba(240, 242, 246, 0.5)',
+        hovermode="x unified",
+        width=900,
+        height=600,
+        margin=dict(l=80, r=80, t=80, b=80),
+        showlegend=False
+    )
+
+    # 添加网格线
+    fig.update_xaxes(showline=True, linewidth=2, linecolor='black', mirror=True)
+    fig.update_yaxes(showline=True, linewidth=2, linecolor='black', mirror=True)
+
+    return fig
+
+
+# 在预测结果显示部分使用
+def show_prediction_results(prediction, input_data):
+    """显示预测结果和图表"""
+    st.markdown('<h2 class="chinese-text">📊 预测结果</h2>', unsafe_allow_html=True)
+
+    # 显示预测值
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric(
+            "预测体积含水率",
+            f"{prediction:.4f}",
+            help="单位体积土壤中水的体积"
+        )
+
+    # 生成示例SWCC曲线
+    st.markdown('<h3 class="chinese-text">📈 示例土水特征曲线</h3>', unsafe_allow_html=True)
+
+    # 创建示例数据
+    suction_range = np.logspace(-1, 5, 50)  # 0.1 到 100,000 kPa
+    # 使用预测值作为参考，生成示例曲线
+    water_content = prediction * (1 / (1 + (suction_range / 100) ** 0.8))
+
+    # 创建图表
+    fig = create_swcc_plot(
+        suction_range,
+        water_content,
+        "示例土水特征曲线 (基于预测值)"
+    )
+
+    # 显示图表
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 添加解释
+    st.info("""
+    **图表说明:**
+    - X轴: 基质吸力 (对数坐标，单位 kPa)
+    - Y轴: 体积含水率
+    - 曲线展示典型的土水特征关系
+    - 高吸力时含水率降低，低吸力时接近饱和
+    """)
+
+
+# 主应用逻辑...
+# [你的其他代码保持不变]
 # 设置matplotlib中文字体（放在导入后立即设置）
 import matplotlib
 matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
