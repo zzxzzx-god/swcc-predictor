@@ -1287,8 +1287,8 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
                 
                 # 提供曲线数据下载
                 curve_data = pd.DataFrame({
-                    '基质吸力(kPa)': suction_range,
-                    '体积含水率': predictions
+                    'Suction(kPa)': suction_range,
+                    'Volumetric Water Content': predictions
                 })
                 
                 csv_curve = curve_data.to_csv(index=False).encode('utf-8')
