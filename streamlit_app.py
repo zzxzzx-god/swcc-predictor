@@ -191,11 +191,11 @@ def plot_swcc_curve(suction_range, predictions, current_point=None):
     plt.rcParams['axes.unicode_minus'] = False
     
     # 绘制主曲线
-    ax.plot(suction_range, predictions, 'b-', linewidth=2, label='SWCC曲线')
+    ax.plot(suction_range, predictions, 'b-', linewidth=2, label='SWCC')
     
     # 如果提供了当前点，在图上标出
     if current_point:
-        ax.plot(current_point[0], current_point[1], 'ro', markersize=10, label='当前预测点')
+        ax.plot(current_point[0], current_point[1], 'ro', markersize=10, label='Current prediction point')
         # 添加文本标注
         ax.annotate(f'({current_point[0]:.1f} kPa, {current_point[1]:.3f})', 
                    xy=current_point, 
@@ -223,7 +223,7 @@ def plot_swcc_curve(suction_range, predictions, current_point=None):
     ax.set_ylim(max(0, min(predictions)-0.05), min(1, max(predictions)+0.05))
     
     # 添加吸力范围的标记
-    ax.text(0.02, 0.02, f'吸力范围: {min(suction_range):.2f} - {max(suction_range):.0f} kPa', 
+    ax.text(0.02, 0.02, f'suction range: {min(suction_range):.2f} - {max(suction_range):.0f} kPa',
            transform=ax.transAxes, fontsize=9, 
            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
     
