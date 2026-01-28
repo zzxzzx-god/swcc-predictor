@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import pickle
 import warnings
-
+import matplotlib.pyplot as plt
 warnings.filterwarnings('ignore')
 
 # 导入plotly（对中文支持更好）
