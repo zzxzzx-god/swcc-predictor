@@ -205,9 +205,9 @@ def plot_swcc_curve(suction_range, predictions, current_point=None):
     
     # 设置坐标轴
     ax.set_xscale('log')  # 吸力使用对数坐标
-    ax.set_xlabel('基质吸力 (kPa, 对数坐标)', fontsize=12)
-    ax.set_ylabel('体积含水率', fontsize=12)
-    ax.set_title('土水特征曲线 (SWCC)', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Suction (kPa)', fontsize=12)
+    ax.set_ylabel('Volumetric Water Content', fontsize=12)
+    ax.set_title('SWCC', fontsize=14, fontweight='bold')
     ax.grid(True, alpha=0.3, linestyle='--')
     ax.legend(loc='best', fontsize=10)
     
