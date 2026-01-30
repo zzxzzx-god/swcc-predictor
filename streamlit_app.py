@@ -197,14 +197,14 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
     plt.rcParams['axes.unicode_minus'] = False
 
     # 主图：SWCC曲线
-    ax.plot(suction_range, predictions, 'b-', linewidth=2, label='SWCC')
+    ax.plot(suction_range, predictions, 'b-', linewidth=2, label='SWCC (XGBoost预测)')
 
     # 如果提供了VG拟合参数，绘制拟合曲线
     if vg_params is not None:
         theta_r, theta_s, alpha, n = vg_params
         m = 1 - 1 / n
         fitted_curve = vg_model(suction_range, theta_r, theta_s, alpha, n)
-        ax.plot(suction_range, fitted_curve, 'r--', linewidth=2, label='the VG model fitting curve')
+        ax.plot(suction_range, fitted_curve, 'r--', linewidth=2, label='VG模型拟合')
 
         # 在图中添加VG方程
         vg_eq = r'$\theta = \theta_r + \frac{\theta_s - \theta_r}{[1 + (\alpha h)^n]^m}$'
@@ -213,7 +213,7 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
 
     # 如果提供了当前点，在图上标出
     if current_point:
-        ax.plot(current_point[0], current_point[1], 'ro', markersize=10, label='Current prediction point')
+        ax.plot(current_point[0], current_point[1], 'ro', markersize=10, label='当前预测点')
         ax.annotate(f'({current_point[0]:.1f} kPa, {current_point[1]:.3f})',
                     xy=current_point,
                     xytext=(current_point[0] * 1.5, current_point[1] * 0.9),
@@ -222,9 +222,9 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
 
     # 设置主图坐标轴
     ax.set_xscale('log')
-    ax.set_xlabel('Suction (kPa)', fontsize=12)
-    ax.set_ylabel('Volumetric Water Content', fontsize=12)
-    ax.set_title('The SWCC curve and the VG model fitting curve', fontsize=14, fontweight='bold')
+    ax.set_xlabel('吸力 (kPa)', fontsize=12)
+    ax.set_ylabel('体积含水率', fontsize=12)
+    ax.set_title('SWCC曲线与VG模型拟合', fontsize=14, fontweight='bold')
     ax.grid(True, alpha=0.3, linestyle='--')
     ax.legend(loc='best', fontsize=10)
     ax.set_facecolor('#f8f9fa')
@@ -236,7 +236,7 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
     ax.set_ylim(y_min, y_max)
 
     # 吸力范围标记
-    ax.text(0.02, 0.02, f'Suction range: {min(suction_range):.2f} - {max(suction_range):.0f} kPa',
+    ax.text(0.02, 0.02, f'吸力范围: {min(suction_range):.2f} - {max(suction_range):.0f} kPa',
             transform=ax.transAxes, fontsize=9,
             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
 
@@ -657,14 +657,16 @@ def main():
             # VG模型拟合选项
             st.markdown("#### 🔧 VG模型拟合选项")
             enable_vg_fitting = st.checkbox("启用VG模型拟合", value=True,
-                                            help="对生成的SWCC曲线进行van Genuchten模型拟合")
+                                            help="对生成的SWCC曲线进行van Genuchten模型拟合",
+                                            key="enable_vg_fitting")
 
             curve_points = st.slider(
                 "曲线点数",
                 min_value=20,
                 max_value=200,
                 value=100,
-                help="SWCC曲线上的点数"
+                help="SWCC曲线上的点数",
+                key="curve_points"
             )
 
             min_suction = st.number_input(
@@ -674,23 +676,26 @@ def main():
                 value=0.01,
                 step=0.01,
                 format="%.3f",
-                help="SWCC曲线的最小吸力值"
+                help="SWCC曲线的最小吸力值",
+                key="min_suction"
             )
 
             max_suction = st.number_input(
                 "最大吸力 (kPa)",
                 min_value=100.0,
-                max_value=1000000.0,
+                max_value=10000000.0,  # 增加最大值范围
                 value=284804.0,
                 step=100.0,
-                help="SWCC曲线的最大吸力值"
+                help="SWCC曲线的最大吸力值",
+                key="max_suction"
             )
 
-            # 保存到session state
-            st.session_state['enable_vg_fitting'] = enable_vg_fitting
-            st.session_state['curve_points'] = curve_points
-            st.session_state['min_suction'] = min_suction
-            st.session_state['max_suction'] = max_suction
+            # 检查max_suction是否大于min_suction
+            if max_suction <= min_suction:
+                st.warning("最大吸力必须大于最小吸力，已自动调整")
+                max_suction = min_suction * 100
+                st.session_state['max_suction'] = max_suction
+
         else:
             # 批量预测时的设置
             st.markdown("### 📊 批量预测设置")
@@ -740,7 +745,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                 value=100.0,
                 step=1.0,
                 format="%.3f",
-                help="输入基质吸力值，单位kPa（可以是任意值）"
+                help="输入基质吸力值，单位kPa（可以是任意值）",
+                key="suction_input"
             )
 
             st.divider()
@@ -755,7 +761,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                 value=0.2,
                 step=0.01,
                 format="%.3f",
-                help="黏粒含量，范围0-1，如0.2表示20%"
+                help="黏粒含量，范围0-1，如0.2表示20%",
+                key="clay_input"
             )
 
             silt = st.number_input(
@@ -765,7 +772,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                 value=0.25,
                 step=0.01,
                 format="%.3f",
-                help="粉粒含量，范围0-1，如0.25表示25%"
+                help="粉粒含量，范围0-1，如0.25表示25%",
+                key="silt_input"
             )
 
             sand = st.number_input(
@@ -775,7 +783,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                 value=0.55,
                 step=0.01,
                 format="%.3f",
-                help="砂粒含量，范围0-1，如0.55表示55%"
+                help="砂粒含量，范围0-1，如0.55表示55%",
+                key="sand_input"
             )
 
             # 显示颗粒组成之和
@@ -796,7 +805,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                 value=1.45,
                 step=0.01,
                 format="%.2f",
-                help="土体干密度，单位：g/cm³"
+                help="土体干密度，单位：g/cm³",
+                key="dd_input"
             )
 
             st.divider()
@@ -809,7 +819,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                 value=5.0,
                 step=0.1,
                 format="%.1f",
-                help="生物炭掺量，单位：%"
+                help="生物炭掺量，单位：%",
+                key="bc_percent_input"
             )
 
             # 转换为小数形式
@@ -830,7 +841,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                     value=500.0,
                     step=10.0,
                     format="%.0f",
-                    help="生物炭热解温度，单位：°C"
+                    help="生物炭热解温度，单位：°C",
+                    key="temperature_input"
                 )
 
         with col3:
@@ -846,7 +858,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                     "生物炭类型 (Biochar_type_combined)",
                     options=biochar_categories,
                     index=0,
-                    help="选择生物炭的原材料类型"
+                    help="选择生物炭的原材料类型",
+                    key="biochar_type_input"
                 )
 
             st.divider()
@@ -891,7 +904,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                 value=100.0,
                 step=1.0,
                 format="%.3f",
-                help="输入基质吸力值，单位kPa（可以是任意值）"
+                help="输入基质吸力值，单位kPa（可以是任意值）",
+                key="suction_input_group2"
             )
 
             st.divider()
@@ -906,7 +920,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                 value=0.2,
                 step=0.01,
                 format="%.3f",
-                help="黏粒含量，范围0-1，如0.2表示20%"
+                help="黏粒含量，范围0-1，如0.2表示20%",
+                key="clay_input_group2"
             )
 
             silt = st.number_input(
@@ -916,7 +931,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                 value=0.25,
                 step=0.01,
                 format="%.3f",
-                help="粉粒含量，范围0-1，如0.25表示25%"
+                help="粉粒含量，范围0-1，如0.25表示25%",
+                key="silt_input_group2"
             )
 
             sand = st.number_input(
@@ -926,7 +942,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                 value=0.55,
                 step=0.01,
                 format="%.3f",
-                help="砂粒含量，范围0-1，如0.55表示55%"
+                help="砂粒含量，范围0-1，如0.55表示55%",
+                key="sand_input_group2"
             )
 
             # 显示颗粒组成之和
@@ -947,7 +964,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                 value=1.45,
                 step=0.01,
                 format="%.2f",
-                help="土体干密度，单位：g/cm³"
+                help="土体干密度，单位：g/cm³",
+                key="dd_input_group2"
             )
 
             st.divider()
@@ -960,7 +978,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                 value=5.0,
                 step=0.1,
                 format="%.1f",
-                help="生物炭掺量，单位：%"
+                help="生物炭掺量，单位：%",
+                key="bc_percent_input_group2"
             )
 
             # 转换为小数形式
@@ -981,7 +1000,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                     value=8.0,
                     step=0.1,
                     format="%.1f",
-                    help="生物炭pH值"
+                    help="生物炭pH值",
+                    key="ph_input"
                 )
 
         with col3:
@@ -1001,7 +1021,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                     value=25.0,
                     step=0.1,
                     format="%.1f",
-                    help="生物炭灰分含量，单位：%"
+                    help="生物炭灰分含量，单位：%",
+                    key="at_input"
                 )
 
                 # 碳含量（百分数形式）- 手动输入
@@ -1012,7 +1033,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                     value=60.0,
                     step=0.1,
                     format="%.1f",
-                    help="生物炭碳含量，单位：%"
+                    help="生物炭碳含量，单位：%",
+                    key="ct_input"
                 )
 
             st.divider()
@@ -1093,7 +1115,8 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
         uploaded_file = st.file_uploader(
             "上传数据文件 (CSV或Excel)",
             type=['csv', 'xlsx', 'xls'],
-            help="选择包含批量预测数据的文件"
+            help="选择包含批量预测数据的文件",
+            key="batch_file_uploader"
         )
 
     with col2:
@@ -1119,7 +1142,8 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                 data=csv,
                 file_name="template_group1.csv",
                 mime="text/csv",
-                use_container_width=True
+                use_container_width=True,
+                key="download_template_group1"
             )
         else:
             # 创建变量组二模板
@@ -1142,7 +1166,8 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                 data=csv,
                 file_name="template_group2.csv",
                 mime="text/csv",
-                use_container_width=True
+                use_container_width=True,
+                key="download_template_group2"
             )
 
     # 如果有文件上传，显示预览和进行预测
@@ -1178,7 +1203,7 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
 
             # 开始批量预测
             st.markdown("### 🚀 开始批量预测")
-            if st.button("开始批量预测", type="primary", use_container_width=True):
+            if st.button("开始批量预测", type="primary", use_container_width=True, key="batch_predict_button"):
                 with st.spinner("正在进行批量预测..."):
                     model = models[model_type]
 
@@ -1262,7 +1287,8 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                             data=csv_result,
                             file_name=f"batch_predictions_{model_type}_{timestamp}.csv",
                             mime="text/csv",
-                            use_container_width=True
+                            use_container_width=True,
+                            key="download_csv_batch"
                         )
 
                     with col_dl2:
@@ -1277,7 +1303,8 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                             data=excel_buffer,
                             file_name=f"batch_predictions_{model_type}_{timestamp}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True
+                            use_container_width=True,
+                            key="download_excel_batch"
                         )
 
                     # 显示预测结果详情
@@ -1512,7 +1539,8 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
                     data=detail_df.to_csv(index=False).encode('utf-8'),
                     file_name=f"SWCC预测_{model_type}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv",
-                    use_container_width=True
+                    use_container_width=True,
+                    key="download_single_result"
                 )
 
             # 从session state获取SWCC曲线设置
@@ -1520,6 +1548,12 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
             min_suction = st.session_state.get('min_suction', 0.01)
             max_suction = st.session_state.get('max_suction', 284804.0)
             enable_vg_fitting = st.session_state.get('enable_vg_fitting', True)
+
+            # 检查max_suction是否大于min_suction
+            if max_suction <= min_suction:
+                st.warning("最大吸力必须大于最小吸力，已自动调整")
+                max_suction = min_suction * 100
+                st.session_state['max_suction'] = max_suction
 
             # 生成SWCC曲线
             st.markdown('<div class="sub-header">📈 SWCC曲线</div>', unsafe_allow_html=True)
@@ -1572,7 +1606,8 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
                     data=csv_curve,
                     file_name=f"SWCC曲线_{model_type}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv",
-                    use_container_width=True
+                    use_container_width=True,
+                    key="download_swcc_curve"
                 )
 
         except Exception as e:
