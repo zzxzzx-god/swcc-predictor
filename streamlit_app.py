@@ -648,12 +648,6 @@ def main():
             enable_vg_fitting = st.checkbox("启用VG模型拟合", value=True, 
                                            help="对生成的SWCC曲线进行van Genuchten模型拟合")
             
-            if enable_vg_fitting:
-                show_derivative = st.checkbox("显示比水容量曲线", value=False,
-                                             help="显示VG模型的导数（比水容量）曲线")
-            else:
-                show_derivative = False
-            
             curve_points = st.slider(
                 "曲线点数",
                 min_value=20,
