@@ -1,4 +1,4 @@
-# app_combined_enhanced.py - 生物炭改性土SWCC预测系统（增强版）
+# app_combined_enhanced_with_VG_fitting.py - 生物炭改性土SWCC预测系统（增强版，带VG模型拟合）
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,6 +6,8 @@ import pickle
 import matplotlib.pyplot as plt
 import io
 import warnings
+from scipy.optimize import curve_fit
+from scipy import stats
 warnings.filterwarnings('ignore')
 
 # 设置matplotlib中文字体（放在导入后立即设置）
@@ -89,8 +91,115 @@ st.markdown("""
         padding: 10px;
         margin-top: 10px;
     }
+    .parameter-table {
+        background-color: #f8f9fa;
+        border-radius: 8px;
+        padding: 10px;
+        margin: 10px 0;
+        border: 1px solid #dee2e6;
+    }
+    .vg-equation {
+        font-family: "Times New Roman", Times, serif;
+        font-size: 1.2rem;
+        text-align: center;
+        background-color: #f0f0f0;
+        padding: 10px;
+        border-radius: 5px;
+        margin: 10px 0;
+        border: 1px solid #ccc;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+# VG模型函数定义
+def vg_model(h, theta_r, theta_s, alpha, n):
+    """
+    van Genuchten模型
+    θ = θr + (θs - θr) / [1 + (α·h)^n]^m
+    其中 m = 1 - 1/n
+    """
+    m = 1 - 1/n
+    return theta_r + (theta_s - theta_r) / ((1 + (alpha * h) ** n) ** m)
+
+def fit_vg_model(suction_data, theta_data, initial_guess=None):
+    """
+    对SWCC数据进行VG模型拟合
+    
+    参数:
+    - suction_data: 吸力数据(kPa)
+    - theta_data: 含水率数据
+    - initial_guess: 初始猜测参数 [θr, θs, α, n]
+    
+    返回:
+    - popt: 最优拟合参数
+    - pcov: 参数的协方差矩阵
+    - r_squared: 决定系数R²
+    - fitted_theta: 拟合值
+    """
+    # 默认初始猜测
+    if initial_guess is None:
+        # θr: 最小含水率的90%
+        # θs: 最大含水率的110%
+        # α: 1/中值吸力
+        # n: 典型值1.5
+        theta_min = np.min(theta_data)
+        theta_max = np.max(theta_data)
+        suction_median = np.median(suction_data[suction_data > 0])
+        
+        initial_guess = [
+            max(0, theta_min * 0.9),  # θr
+            min(0.5, theta_max * 1.1),  # θs
+            1.0 / suction_median if suction_median > 0 else 0.01,  # α
+            1.5  # n
+        ]
+    
+    # 参数边界条件
+    lower_bounds = [0, 0, 0.00001, 1.01]  # n必须大于1
+    upper_bounds = [0.5, 0.6, 10, 10]     # 合理范围
+    
+    try:
+        # 使用curve_fit进行拟合
+        popt, pcov = curve_fit(
+            vg_model, 
+            suction_data, 
+            theta_data,
+            p0=initial_guess,
+            bounds=(lower_bounds, upper_bounds),
+            maxfev=5000
+        )
+        
+        # 计算拟合值
+        fitted_theta = vg_model(suction_data, *popt)
+        
+        # 计算R²
+        residuals = theta_data - fitted_theta
+        ss_res = np.sum(residuals**2)
+        ss_tot = np.sum((theta_data - np.mean(theta_data))**2)
+        r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+        
+        return popt, pcov, r_squared, fitted_theta
+    
+    except Exception as e:
+        st.warning(f"VG模型拟合失败: {e}")
+        return None, None, 0, None
+
+def calculate_vg_derivatives(popt, suction_range):
+    """
+    计算VG模型的导数（比水容量）
+    C(h) = dθ/dh
+    """
+    theta_r, theta_s, alpha, n = popt
+    m = 1 - 1/n
+    
+    # 避免除以零
+    suction_range = np.maximum(suction_range, 1e-10)
+    
+    # 计算导数
+    term1 = (alpha * suction_range) ** (n - 1)
+    term2 = (1 + (alpha * suction_range) ** n) ** (-m - 1)
+    dtheta_dh = -alpha * n * m * (theta_s - theta_r) * term1 * term2
+    
+    return dtheta_dh
 
 # 加载模型
 @st.cache_resource
@@ -181,55 +290,212 @@ def generate_swcc_curve(model, model_type, base_input, suction_range):
     
     return predictions
 
-def plot_swcc_curve(suction_range, predictions, current_point=None):
-    """绘制SWCC曲线"""
-    # 创建图形和坐标轴
-    fig, ax = plt.subplots(figsize=(10, 6))
+def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_point=None, show_derivative=False):
+    """绘制SWCC曲线和VG模型拟合结果"""
+    # 创建子图
+    if show_derivative and vg_params is not None:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    else:
+        fig, ax1 = plt.subplots(figsize=(10, 6))
+        ax2 = None
     
     # 确保使用中文字体
     plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'Microsoft YaHei']
     plt.rcParams['axes.unicode_minus'] = False
     
-    # 绘制主曲线
-    ax.plot(suction_range, predictions, 'b-', linewidth=2, label='SWCC')
+    # 主图：SWCC曲线
+    ax1.plot(suction_range, predictions, 'b-', linewidth=2, label='SWCC (XGBoost预测)')
+    
+    # 如果提供了VG拟合参数，绘制拟合曲线
+    if vg_params is not None:
+        theta_r, theta_s, alpha, n = vg_params
+        m = 1 - 1/n
+        fitted_curve = vg_model(suction_range, theta_r, theta_s, alpha, n)
+        ax1.plot(suction_range, fitted_curve, 'r--', linewidth=2, label='VG模型拟合')
+        
+        # 在图中添加VG方程
+        vg_eq = r'$\theta = \theta_r + \frac{\theta_s - \theta_r}{[1 + (\alpha h)^n]^m}$'
+        ax1.text(0.02, 0.98, vg_eq, transform=ax1.transAxes, fontsize=12, 
+                verticalalignment='top', bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
     
     # 如果提供了当前点，在图上标出
     if current_point:
-        ax.plot(current_point[0], current_point[1], 'ro', markersize=10, label='Current prediction point')
-        # 添加文本标注
-        ax.annotate(f'({current_point[0]:.1f} kPa, {current_point[1]:.3f})', 
+        ax1.plot(current_point[0], current_point[1], 'ro', markersize=10, label='当前预测点')
+        ax1.annotate(f'({current_point[0]:.1f} kPa, {current_point[1]:.3f})', 
                    xy=current_point, 
                    xytext=(current_point[0]*1.5, current_point[1]*0.9),
                    arrowprops=dict(arrowstyle='->', color='red'),
                    fontsize=10, color='red')
     
-    # 设置坐标轴
-    ax.set_xscale('log')  # 吸力使用对数坐标
-    ax.set_xlabel('Suction (kPa)', fontsize=12)
-    ax.set_ylabel('Volumetric Water Content', fontsize=12)
-    ax.set_title('SWCC', fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3, linestyle='--')
-    ax.legend(loc='best', fontsize=10)
-    
-    # 设置图形背景
-    ax.set_facecolor('#f8f9fa')
-    fig.patch.set_facecolor('#f8f9fa')
-    
-    # 添加网格线
-    ax.grid(True, which='both', alpha=0.3, linestyle='--')
+    # 设置主图坐标轴
+    ax1.set_xscale('log')
+    ax1.set_xlabel('吸力 (kPa)', fontsize=12)
+    ax1.set_ylabel('体积含水率', fontsize=12)
+    ax1.set_title('SWCC曲线与VG模型拟合', fontsize=14, fontweight='bold')
+    ax1.grid(True, alpha=0.3, linestyle='--')
+    ax1.legend(loc='best', fontsize=10)
+    ax1.set_facecolor('#f8f9fa')
     
     # 设置坐标轴范围
-    ax.set_xlim(min(suction_range), max(suction_range))
-    ax.set_ylim(max(0, min(predictions)-0.05), min(1, max(predictions)+0.05))
+    ax1.set_xlim(min(suction_range), max(suction_range))
+    y_min = max(0, min(predictions)-0.05)
+    y_max = min(1, max(predictions)+0.05)
+    ax1.set_ylim(y_min, y_max)
     
-    # 添加吸力范围的标记
-    ax.text(0.02, 0.02, f'suction range: {min(suction_range):.2f} - {max(suction_range):.0f} kPa',
-           transform=ax.transAxes, fontsize=9, 
+    # 吸力范围标记
+    ax1.text(0.02, 0.02, f'吸力范围: {min(suction_range):.2f} - {max(suction_range):.0f} kPa',
+           transform=ax1.transAxes, fontsize=9, 
            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
     
-    plt.tight_layout()
+    # 如果有导数图，绘制比水容量曲线
+    if ax2 is not None and vg_params is not None:
+        # 计算比水容量
+        dtheta_dh = calculate_vg_derivatives(vg_params, suction_range)
+        
+        # 绘制比水容量曲线
+        ax2.plot(suction_range, -dtheta_dh, 'g-', linewidth=2)
+        ax2.set_xscale('log')
+        ax2.set_yscale('log')
+        ax2.set_xlabel('吸力 (kPa)', fontsize=12)
+        ax2.set_ylabel('比水容量 |dθ/dh|', fontsize=12)
+        ax2.set_title('VG模型比水容量曲线', fontsize=14, fontweight='bold')
+        ax2.grid(True, alpha=0.3, linestyle='--')
+        ax2.set_facecolor('#f8f9fa')
+        
+        # 找到峰值点
+        peak_idx = np.argmax(-dtheta_dh)
+        peak_suction = suction_range[peak_idx]
+        peak_value = -dtheta_dh[peak_idx]
+        
+        # 标记峰值点
+        ax2.plot(peak_suction, peak_value, 'mo', markersize=8)
+        ax2.annotate(f'峰值: {peak_value:.2e}\n吸力: {peak_suction:.1f} kPa',
+                    xy=(peak_suction, peak_value),
+                    xytext=(peak_suction*2, peak_value),
+                    arrowprops=dict(arrowstyle='->', color='purple'),
+                    fontsize=10, color='purple')
     
+    plt.tight_layout()
     return fig
+
+def display_vg_parameters(popt, r_squared, suction_range, theta_data):
+    """显示VG模型参数"""
+    if popt is None:
+        st.warning("VG模型拟合失败，无法显示参数")
+        return
+    
+    theta_r, theta_s, alpha, n = popt
+    m = 1 - 1/n
+    
+    # 创建参数表格
+    st.markdown('<div class="sub-header">📊 VG模型拟合参数</div>', unsafe_allow_html=True)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown('<div class="parameter-table">', unsafe_allow_html=True)
+        st.markdown("##### 模型参数")
+        
+        param_data = {
+            '参数': ['θr (残余含水率)', 'θs (饱和含水率)', 'α (倒数的吸力)', 'n (形状参数)', 'm (=1-1/n)', 'R² (决定系数)'],
+            '值': [
+                f"{theta_r:.6f}",
+                f"{theta_s:.6f}", 
+                f"{alpha:.6f}",
+                f"{n:.6f}",
+                f"{m:.6f}",
+                f"{r_squared:.6f}"
+            ],
+            '物理意义': [
+                '低吸力下的最小含水率',
+                '零吸力下的最大含水率',
+                '进气值的倒数',
+                '孔径分布指数',
+                '曲线形状参数',
+                '拟合优度 (1为完美拟合)'
+            ]
+        }
+        
+        param_df = pd.DataFrame(param_data)
+        st.dataframe(param_df, use_container_width=True, hide_index=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<div class="parameter-table">', unsafe_allow_html=True)
+        st.markdown("##### 特征吸力值")
+        
+        # 计算特征吸力
+        # 进气值 (air entry value)
+        ha = 1/alpha if alpha > 0 else 0
+        
+        # 有效饱和度为0.5时的吸力
+        se = 0.5
+        h50 = (1/alpha) * ((1/se**(1/m)) - 1)**(1/n) if alpha > 0 and m > 0 and n > 0 else 0
+        
+        # 计算有效饱和度
+        se_data = (theta_data - theta_r) / (theta_s - theta_r) if (theta_s - theta_r) > 0 else np.zeros_like(theta_data)
+        
+        feature_data = {
+            '特征点': ['进气值 ha', 'Se=0.5时吸力 h₅₀', '预测最小吸力', '预测最大吸力', '数据点数量'],
+            '吸力值 (kPa)': [
+                f"{ha:.3f}",
+                f"{h50:.3f}",
+                f"{np.min(suction_range):.3f}",
+                f"{np.max(suction_range):.3f}",
+                f"{len(suction_range)}"
+            ],
+            '备注': [
+                '1/α',
+                'Se = (θ-θr)/(θs-θr) = 0.5',
+                '曲线起点',
+                '曲线终点',
+                'SWCC曲线点数'
+            ]
+        }
+        
+        feature_df = pd.DataFrame(feature_data)
+        st.dataframe(feature_df, use_container_width=True, hide_index=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # 显示VG模型方程
+    st.markdown('<div class="vg-equation">', unsafe_allow_html=True)
+    st.markdown("### van Genuchten (VG) 模型方程")
+    st.latex(r'''
+    \theta(h) = \theta_r + \frac{\theta_s - \theta_r}{\left[1 + (\alpha \cdot h)^n\right]^m}
+    ''')
+    st.markdown(f'''
+    其中:
+    - θ(h): 吸力为 h 时的体积含水率
+    - θr = {theta_r:.4f} (残余含水率)
+    - θs = {theta_s:.4f} (饱和含水率)
+    - α = {alpha:.6f} kPa⁻¹
+    - n = {n:.4f}
+    - m = 1 - 1/n = {m:.4f}
+    ''')
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # 提供参数下载
+    vg_params_dict = {
+        'theta_r': theta_r,
+        'theta_s': theta_s,
+        'alpha': alpha,
+        'n': n,
+        'm': m,
+        'R_squared': r_squared,
+        'ha': ha,
+        'h50': h50
+    }
+    
+    vg_params_df = pd.DataFrame([vg_params_dict])
+    
+    csv_params = vg_params_df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 下载VG模型参数",
+        data=csv_params,
+        file_name=f"VG_model_parameters_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
 
 def batch_predict_group1(model, data_df, feature_info):
     """批量预测 - 变量组一"""
@@ -422,6 +688,18 @@ def main():
         # SWCC曲线设置（仅单点预测时显示）
         if prediction_mode == "单点预测":
             st.markdown("### 📈 SWCC曲线设置")
+            
+            # VG模型拟合选项
+            st.markdown("#### 🔧 VG模型拟合选项")
+            enable_vg_fitting = st.checkbox("启用VG模型拟合", value=True, 
+                                           help="对生成的SWCC曲线进行van Genuchten模型拟合")
+            
+            if enable_vg_fitting:
+                show_derivative = st.checkbox("显示比水容量曲线", value=False,
+                                             help="显示VG模型的导数（比水容量）曲线")
+            else:
+                show_derivative = False
+            
             curve_points = st.slider(
                 "曲线点数",
                 min_value=20,
@@ -448,6 +726,13 @@ def main():
                 step=100.0,
                 help="SWCC曲线的最大吸力值"
             )
+            
+            # 保存到session state
+            st.session_state['enable_vg_fitting'] = enable_vg_fitting
+            st.session_state['show_derivative'] = show_derivative
+            st.session_state['curve_points'] = curve_points
+            st.session_state['min_suction'] = min_suction
+            st.session_state['max_suction'] = max_suction
         else:
             # 批量预测时的设置
             st.markdown("### 📊 批量预测设置")
@@ -1265,10 +1550,12 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
                     use_container_width=True
                 )
             
-            # 从侧边栏获取SWCC曲线设置（需要重新获取，这里简化处理）
+            # 从session state获取SWCC曲线设置
             curve_points = st.session_state.get('curve_points', 100)
             min_suction = st.session_state.get('min_suction', 0.01)
             max_suction = st.session_state.get('max_suction', 284804.0)
+            enable_vg_fitting = st.session_state.get('enable_vg_fitting', True)
+            show_derivative = st.session_state.get('show_derivative', False)
             
             # 生成SWCC曲线
             st.markdown('<div class="sub-header">📈 SWCC曲线</div>', unsafe_allow_html=True)
@@ -1280,16 +1567,43 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
             with st.spinner("正在生成SWCC曲线..."):
                 predictions = generate_swcc_curve(model, model_type, input_data, suction_range)
                 
+                # VG模型拟合
+                vg_params = None
+                r_squared = 0
+                fitted_curve = None
+                
+                if enable_vg_fitting:
+                    with st.spinner("正在进行VG模型拟合..."):
+                        popt, pcov, r_squared, fitted_curve = fit_vg_model(suction_range, predictions)
+                        
+                        if popt is not None:
+                            vg_params = popt
+                            st.success(f"✅ VG模型拟合成功！R² = {r_squared:.6f}")
+                
                 # 绘制SWCC曲线
                 current_point = (suction, prediction) if suction >= min_suction and suction <= max_suction else None
-                fig = plot_swcc_curve(suction_range, predictions, current_point)
+                
+                if enable_vg_fitting and vg_params is not None:
+                    fig = plot_swcc_with_vg_fit(suction_range, predictions, vg_params, current_point, show_derivative)
+                else:
+                    fig = plot_swcc_with_vg_fit(suction_range, predictions, None, current_point, False)
+                
                 st.pyplot(fig)
+                
+                # 显示VG模型参数
+                if enable_vg_fitting and vg_params is not None:
+                    display_vg_parameters(vg_params, r_squared, suction_range, predictions)
                 
                 # 提供曲线数据下载
                 curve_data = pd.DataFrame({
                     'Suction(kPa)': suction_range,
-                    'Volumetric Water Content': predictions
+                    'Volumetric_Water_Content': predictions
                 })
+                
+                # 如果有VG拟合结果，添加到数据中
+                if fitted_curve is not None:
+                    curve_data['VG_Fitted_Water_Content'] = fitted_curve
+                    curve_data['Residual'] = predictions - fitted_curve
                 
                 csv_curve = curve_data.to_csv(index=False).encode('utf-8')
                 st.download_button(
