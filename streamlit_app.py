@@ -183,23 +183,6 @@ def fit_vg_model(suction_data, theta_data, initial_guess=None):
         st.warning(f"VG模型拟合失败: {e}")
         return None, None, 0, None
 
-def calculate_vg_derivatives(popt, suction_range):
-    """
-    计算VG模型的导数（比水容量）
-    C(h) = dθ/dh
-    """
-    theta_r, theta_s, alpha, n = popt
-    m = 1 - 1/n
-    
-    # 避免除以零
-    suction_range = np.maximum(suction_range, 1e-10)
-    
-    # 计算导数
-    term1 = (alpha * suction_range) ** (n - 1)
-    term2 = (1 + (alpha * suction_range) ** n) ** (-m - 1)
-    dtheta_dh = -alpha * n * m * (theta_s - theta_r) * term1 * term2
-    
-    return dtheta_dh
 
 # 加载模型
 @st.cache_resource
@@ -304,14 +287,14 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
     plt.rcParams['axes.unicode_minus'] = False
     
     # 主图：SWCC曲线
-    ax1.plot(suction_range, predictions, 'b-', linewidth=2, label='SWCC (XGBoost预测)')
+    ax1.plot(suction_range, predictions, 'b-', linewidth=2, label='SWCC ')
     
     # 如果提供了VG拟合参数，绘制拟合曲线
     if vg_params is not None:
         theta_r, theta_s, alpha, n = vg_params
         m = 1 - 1/n
         fitted_curve = vg_model(suction_range, theta_r, theta_s, alpha, n)
-        ax1.plot(suction_range, fitted_curve, 'r--', linewidth=2, label='VG模型拟合')
+        ax1.plot(suction_range, fitted_curve, 'r--', linewidth=2, label='VG model fitting curve')
         
         # 在图中添加VG方程
         vg_eq = r'$\theta = \theta_r + \frac{\theta_s - \theta_r}{[1 + (\alpha h)^n]^m}$'
@@ -320,7 +303,7 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
     
     # 如果提供了当前点，在图上标出
     if current_point:
-        ax1.plot(current_point[0], current_point[1], 'ro', markersize=10, label='当前预测点')
+        ax1.plot(current_point[0], current_point[1], 'ro', markersize=10, label='Current prediction point')
         ax1.annotate(f'({current_point[0]:.1f} kPa, {current_point[1]:.3f})', 
                    xy=current_point, 
                    xytext=(current_point[0]*1.5, current_point[1]*0.9),
@@ -329,9 +312,9 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
     
     # 设置主图坐标轴
     ax1.set_xscale('log')
-    ax1.set_xlabel('吸力 (kPa)', fontsize=12)
-    ax1.set_ylabel('体积含水率', fontsize=12)
-    ax1.set_title('SWCC曲线与VG模型拟合', fontsize=14, fontweight='bold')
+    ax1.set_xlabel('Suction (kPa)', fontsize=12)
+    ax1.set_ylabel('Volumetric Water Content ', fontsize=12)
+    ax1.set_title('The SWCC curve and the VG model fitting curve', fontsize=14, fontweight='bold')
     ax1.grid(True, alpha=0.3, linestyle='--')
     ax1.legend(loc='best', fontsize=10)
     ax1.set_facecolor('#f8f9fa')
@@ -343,40 +326,11 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
     ax1.set_ylim(y_min, y_max)
     
     # 吸力范围标记
-    ax1.text(0.02, 0.02, f'吸力范围: {min(suction_range):.2f} - {max(suction_range):.0f} kPa',
+    ax1.text(0.02, 0.02, f'Suction range: {min(suction_range):.2f} - {max(suction_range):.0f} kPa',
            transform=ax1.transAxes, fontsize=9, 
            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
     
-    # 如果有导数图，绘制比水容量曲线
-    if ax2 is not None and vg_params is not None:
-        # 计算比水容量
-        dtheta_dh = calculate_vg_derivatives(vg_params, suction_range)
-        
-        # 绘制比水容量曲线
-        ax2.plot(suction_range, -dtheta_dh, 'g-', linewidth=2)
-        ax2.set_xscale('log')
-        ax2.set_yscale('log')
-        ax2.set_xlabel('吸力 (kPa)', fontsize=12)
-        ax2.set_ylabel('比水容量 |dθ/dh|', fontsize=12)
-        ax2.set_title('VG模型比水容量曲线', fontsize=14, fontweight='bold')
-        ax2.grid(True, alpha=0.3, linestyle='--')
-        ax2.set_facecolor('#f8f9fa')
-        
-        # 找到峰值点
-        peak_idx = np.argmax(-dtheta_dh)
-        peak_suction = suction_range[peak_idx]
-        peak_value = -dtheta_dh[peak_idx]
-        
-        # 标记峰值点
-        ax2.plot(peak_suction, peak_value, 'mo', markersize=8)
-        ax2.annotate(f'峰值: {peak_value:.2e}\n吸力: {peak_suction:.1f} kPa',
-                    xy=(peak_suction, peak_value),
-                    xytext=(peak_suction*2, peak_value),
-                    arrowprops=dict(arrowstyle='->', color='purple'),
-                    fontsize=10, color='purple')
-    
-    plt.tight_layout()
-    return fig
+
 
 def display_vg_parameters(popt, r_squared, suction_range, theta_data):
     """显示VG模型参数"""
