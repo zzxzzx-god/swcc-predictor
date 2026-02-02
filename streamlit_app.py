@@ -197,14 +197,14 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
     plt.rcParams['axes.unicode_minus'] = False
 
     # 主图：SWCC曲线
-    ax.plot(suction_range, predictions, 'b-', linewidth=2, label='SWCC (XGBoost预测)')
+    ax.plot(suction_range, predictions, 'b-', linewidth=2, label='SWCC (XGBoost)')
 
     # 如果提供了VG拟合参数，绘制拟合曲线
     if vg_params is not None:
         theta_r, theta_s, alpha, n = vg_params
         m = 1 - 1 / n
         fitted_curve = vg_model(suction_range, theta_r, theta_s, alpha, n)
-        ax.plot(suction_range, fitted_curve, 'r--', linewidth=2, label='VG模型拟合')
+        ax.plot(suction_range, fitted_curve, 'r--', linewidth=2, label=' vG model fitting curve')
 
         # 在图中添加VG方程
         vg_eq = r'$\theta = \theta_r + \frac{\theta_s - \theta_r}{[1 + (\alpha h)^n]^m}$'
@@ -213,7 +213,7 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
 
     # 如果提供了当前点，在图上标出
     if current_point:
-        ax.plot(current_point[0], current_point[1], 'ro', markersize=10, label='当前预测点')
+        ax.plot(current_point[0], current_point[1], 'ro', markersize=10, label='Current prediction point')
         ax.annotate(f'({current_point[0]:.1f} kPa, {current_point[1]:.3f})',
                     xy=current_point,
                     xytext=(current_point[0] * 1.5, current_point[1] * 0.9),
@@ -222,9 +222,9 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
 
     # 设置主图坐标轴
     ax.set_xscale('log')
-    ax.set_xlabel('吸力 (kPa)', fontsize=12)
-    ax.set_ylabel('体积含水率', fontsize=12)
-    ax.set_title('SWCC曲线与VG模型拟合', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Suction (kPa)', fontsize=12)
+    ax.set_ylabel('Volumetric water content', fontsize=12)
+    ax.set_title(' SWCC and the VG model fitting curve', fontsize=14, fontweight='bold')
     ax.grid(True, alpha=0.3, linestyle='--')
     ax.legend(loc='best', fontsize=10)
     ax.set_facecolor('#f8f9fa')
@@ -236,7 +236,7 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
     ax.set_ylim(y_min, y_max)
 
     # 吸力范围标记
-    ax.text(0.02, 0.02, f'吸力范围: {min(suction_range):.2f} - {max(suction_range):.0f} kPa',
+    ax.text(0.02, 0.02, f'Suction range: {min(suction_range):.2f} - {max(suction_range):.0f} kPa',
             transform=ax.transAxes, fontsize=9,
             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
 
@@ -274,7 +274,7 @@ def display_vg_parameters(popt, r_squared, suction_range, theta_data):
                 f"{r_squared:.6f}"
             ],
             '物理意义': [
-                '低吸力下的最小含水率',
+                '高吸力下的最小含水率',
                 '零吸力下的最大含水率',
                 '进气值的倒数',
                 '孔径分布指数',
