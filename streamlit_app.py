@@ -1246,17 +1246,17 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                     plt.rcParams['axes.unicode_minus'] = False
 
                     # 绘制直方图
-                    valid_predictions = result_df['预测体积含水率'].dropna()
+                    valid_predictions = result_df['Prediction of volumetric moisture content'].dropna()
                     if len(valid_predictions) > 0:
                         ax.hist(valid_predictions, bins=20, alpha=0.7, color='steelblue', edgecolor='black')
                         ax.axvline(valid_predictions.mean(), color='red', linestyle='--', linewidth=2,
-                                   label=f'均值: {valid_predictions.mean():.3f}')
+                                   label=f'mean value: {valid_predictions.mean():.3f}')
                         ax.axvline(valid_predictions.median(), color='green', linestyle='--', linewidth=2,
-                                   label=f'中位数: {valid_predictions.median():.3f}')
+                                   label=f'median: {valid_predictions.median():.3f}')
 
-                        ax.set_xlabel('体积含水率', fontsize=12)
-                        ax.set_ylabel('频数', fontsize=12)
-                        ax.set_title('预测结果分布直方图', fontsize=14, fontweight='bold')
+                        ax.set_xlabel('Volumetric water content', fontsize=12)
+                        ax.set_ylabel('frequency', fontsize=12)
+                        ax.set_title('Distribution histogram of prediction results', fontsize=14, fontweight='bold')
                         ax.legend()
                         ax.grid(True, alpha=0.3)
 
@@ -1295,7 +1295,7 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                         # 转换为Excel格式
                         excel_buffer = io.BytesIO()
                         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                            result_df.to_excel(writer, index=False, sheet_name='预测结果')
+                            result_df.to_excel(writer, index=False, sheet_name='prediction results')
                         excel_buffer.seek(0)
 
                         st.download_button(
