@@ -1246,7 +1246,7 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                     plt.rcParams['axes.unicode_minus'] = False
 
                     # 绘制直方图
-                    valid_predictions = result_df['Prediction of volumetric moisture content'].dropna()
+                    valid_predictions = result_df['预测体积含水率'].dropna()
                     if len(valid_predictions) > 0:
                         ax.hist(valid_predictions, bins=20, alpha=0.7, color='steelblue', edgecolor='black')
                         ax.axvline(valid_predictions.mean(), color='red', linestyle='--', linewidth=2,
