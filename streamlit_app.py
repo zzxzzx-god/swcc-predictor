@@ -6,6 +6,7 @@ import pickle
 import matplotlib.pyplot as plt
 import io
 import warnings
+import importlib.util
 from scipy.optimize import curve_fit
 
 warnings.filterwarnings('ignore')
@@ -112,6 +113,28 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
+
+
+def create_excel_bytes(sheets_dict):
+    """将多个DataFrame写入Excel字节流，优先使用xlsxwriter，缺失时回退到openpyxl。"""
+    excel_buffer = io.BytesIO()
+
+    engine = None
+    if importlib.util.find_spec('xlsxwriter') is not None:
+        engine = 'xlsxwriter'
+    elif importlib.util.find_spec('openpyxl') is not None:
+        engine = 'openpyxl'
+    else:
+        raise ModuleNotFoundError('当前环境缺少 xlsxwriter 和 openpyxl，无法生成 Excel 文件。请安装其中任意一个，或改用 CSV 下载。')
+
+    with pd.ExcelWriter(excel_buffer, engine=engine) as writer:
+        for sheet_name, df in sheets_dict.items():
+            safe_name = str(sheet_name)[:31] if sheet_name else 'Sheet1'
+            df.to_excel(writer, index=False, sheet_name=safe_name)
+
+    excel_buffer.seek(0)
+    return excel_buffer.getvalue()
 
 # VG模型函数定义
 def vg_model(h, theta_r, theta_s, alpha, n):
@@ -1300,19 +1323,16 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
             }
             template_df = pd.DataFrame(template_data)
 
-            excel_buffer = io.BytesIO()
-            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                template_df.to_excel(writer, index=False, sheet_name='模板数据')
-                instruction_df = pd.DataFrame({
-                    '字段': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature', 'Biochar_type_combined'],
-                    '说明': ['吸力（kPa）', '黏土含量', '粉土含量', '砂土含量', '干密度（g/cm³）', '生物炭添加量（%）', '热解温度（℃）', '生物炭类型'],
-                    '备注': ['数值型', '建议 0-1', '建议 0-1', '建议 0-1', '数值型', '百分数，如 5 表示 5%', 'BC=0 时可填 0', '示例：农业废弃物、林业残余物']
-                })
-                instruction_df.to_excel(writer, index=False, sheet_name='填写说明')
+            instruction_df = pd.DataFrame({
+                '字段': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature', 'Biochar_type_combined'],
+                '说明': ['吸力（kPa）', '黏土含量', '粉土含量', '砂土含量', '干密度（g/cm³）', '生物炭添加量（%）', '热解温度（℃）', '生物炭类型'],
+                '备注': ['数值型', '建议 0-1', '建议 0-1', '建议 0-1', '数值型', '百分数，如 5 表示 5%', 'BC=0 时可填 0', '示例：农业废弃物、林业残余物']
+            })
+            excel_bytes = create_excel_bytes({'模板数据': template_df, '填写说明': instruction_df})
 
             st.download_button(
                 label="下载变量组一 Excel 模板",
-                data=excel_buffer.getvalue(),
+                data=excel_bytes,
                 file_name="template_group1.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
@@ -1343,19 +1363,16 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
             }
             template_df = pd.DataFrame(template_data)
 
-            excel_buffer = io.BytesIO()
-            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                template_df.to_excel(writer, index=False, sheet_name='模板数据')
-                instruction_df = pd.DataFrame({
-                    '字段': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'pH', 'AT', 'CT'],
-                    '说明': ['吸力（kPa）', '黏土含量', '粉土含量', '砂土含量', '干密度（g/cm³）', '生物炭添加量（%）', '酸碱度 pH', '灰分含量（%）', '碳含量（%）'],
-                    '备注': ['数值型', '建议 0-1', '建议 0-1', '建议 0-1', '数值型', '百分数，如 5 表示 5%', 'BC=0 时可填 0', 'BC=0 时可填 0', 'BC=0 时可填 0']
-                })
-                instruction_df.to_excel(writer, index=False, sheet_name='填写说明')
+            instruction_df = pd.DataFrame({
+                '字段': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'pH', 'AT', 'CT'],
+                '说明': ['吸力（kPa）', '黏土含量', '粉土含量', '砂土含量', '干密度（g/cm³）', '生物炭添加量（%）', '酸碱度 pH', '灰分含量（%）', '碳含量（%）'],
+                '备注': ['数值型', '建议 0-1', '建议 0-1', '建议 0-1', '数值型', '百分数，如 5 表示 5%', 'BC=0 时可填 0', 'BC=0 时可填 0', 'BC=0 时可填 0']
+            })
+            excel_bytes = create_excel_bytes({'模板数据': template_df, '填写说明': instruction_df})
 
             st.download_button(
                 label="下载变量组二 Excel 模板",
-                data=excel_buffer.getvalue(),
+                data=excel_bytes,
                 file_name="template_group2.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
@@ -1495,14 +1512,11 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
 
                     with col_dl2:
                         # 转换为Excel格式
-                        excel_buffer = io.BytesIO()
-                        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                            result_df.to_excel(writer, index=False, sheet_name='prediction results')
-                        excel_buffer.seek(0)
+                        excel_bytes = create_excel_bytes({'prediction results': result_df})
 
                         st.download_button(
                             label="📥 下载Excel格式",
-                            data=excel_buffer,
+                            data=excel_bytes,
                             file_name=f"batch_predictions_{model_type}_{timestamp}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True,
