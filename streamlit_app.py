@@ -826,7 +826,7 @@ def main():
                 "曲线点数",
                 min_value=20,
                 max_value=200,
-                value=100,
+                value=30,
                 help="SWCC曲线上的点数",
                 key="curve_points"
             )
@@ -1706,7 +1706,7 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
                 )
 
             # 从session state获取SWCC曲线设置
-            curve_points = st.session_state.get('curve_points', 100)
+            curve_points = st.session_state.get('curve_points', 30)
             min_suction = st.session_state.get('min_suction', 0.01)
             max_suction = st.session_state.get('max_suction', 284804.0)
             enable_vg_fitting = st.session_state.get('enable_vg_fitting', True)
