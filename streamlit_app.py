@@ -826,7 +826,7 @@ def main():
                 "曲线点数",
                 min_value=20,
                 max_value=200,
-                value=30,
+                value=100,
                 help="SWCC曲线上的点数",
                 key="curve_points"
             )
@@ -1284,6 +1284,8 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
     with col2:
         # 下载模板文件
         st.markdown("### 📥 下载模板")
+        st.caption("建议优先下载 Excel 模板（.xlsx），可避免中文在 Excel 中显示乱码。")
+
         if model_type == 'group1':
             # 创建变量组一模板
             template_data = {
@@ -1297,15 +1299,34 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                 'Biochar_type_combined': ['农业废弃物', '林业残余物', '农业废弃物']
             }
             template_df = pd.DataFrame(template_data)
-            csv = template_df.to_csv(index=False).encode('utf-8')
+
+            excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                template_df.to_excel(writer, index=False, sheet_name='模板数据')
+                instruction_df = pd.DataFrame({
+                    '字段': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature', 'Biochar_type_combined'],
+                    '说明': ['吸力（kPa）', '黏土含量', '粉土含量', '砂土含量', '干密度（g/cm³）', '生物炭添加量（%）', '热解温度（℃）', '生物炭类型'],
+                    '备注': ['数值型', '建议 0-1', '建议 0-1', '建议 0-1', '数值型', '百分数，如 5 表示 5%', 'BC=0 时可填 0', '示例：农业废弃物、林业残余物']
+                })
+                instruction_df.to_excel(writer, index=False, sheet_name='填写说明')
 
             st.download_button(
-                label="下载变量组一模板",
+                label="下载变量组一 Excel 模板",
+                data=excel_buffer.getvalue(),
+                file_name="template_group1.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="download_template_group1_excel"
+            )
+
+            csv = template_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+            st.download_button(
+                label="下载变量组一 CSV 模板",
                 data=csv,
                 file_name="template_group1.csv",
                 mime="text/csv",
                 use_container_width=True,
-                key="download_template_group1"
+                key="download_template_group1_csv"
             )
         else:
             # 创建变量组二模板
@@ -1321,15 +1342,34 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                 'CT': [60.0, 65.0, 0.0]  # 百分数
             }
             template_df = pd.DataFrame(template_data)
-            csv = template_df.to_csv(index=False).encode('utf-8')
+
+            excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                template_df.to_excel(writer, index=False, sheet_name='模板数据')
+                instruction_df = pd.DataFrame({
+                    '字段': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'pH', 'AT', 'CT'],
+                    '说明': ['吸力（kPa）', '黏土含量', '粉土含量', '砂土含量', '干密度（g/cm³）', '生物炭添加量（%）', '酸碱度 pH', '灰分含量（%）', '碳含量（%）'],
+                    '备注': ['数值型', '建议 0-1', '建议 0-1', '建议 0-1', '数值型', '百分数，如 5 表示 5%', 'BC=0 时可填 0', 'BC=0 时可填 0', 'BC=0 时可填 0']
+                })
+                instruction_df.to_excel(writer, index=False, sheet_name='填写说明')
 
             st.download_button(
-                label="下载变量组二模板",
+                label="下载变量组二 Excel 模板",
+                data=excel_buffer.getvalue(),
+                file_name="template_group2.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="download_template_group2_excel"
+            )
+
+            csv = template_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+            st.download_button(
+                label="下载变量组二 CSV 模板",
                 data=csv,
                 file_name="template_group2.csv",
                 mime="text/csv",
                 use_container_width=True,
-                key="download_template_group2"
+                key="download_template_group2_csv"
             )
 
     # 如果有文件上传，显示预览和进行预测
@@ -1706,7 +1746,7 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
                 )
 
             # 从session state获取SWCC曲线设置
-            curve_points = st.session_state.get('curve_points', 30)
+            curve_points = st.session_state.get('curve_points', 100)
             min_suction = st.session_state.get('min_suction', 0.01)
             max_suction = st.session_state.get('max_suction', 284804.0)
             enable_vg_fitting = st.session_state.get('enable_vg_fitting', True)
