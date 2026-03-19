@@ -124,6 +124,81 @@ def vg_model(h, theta_r, theta_s, alpha, n):
     return theta_r + (theta_s - theta_r) / ((1 + (alpha * h) ** n) ** m)
 
 
+def moving_average_with_padding(values, window_size=5):
+    """边界友好的移动平均平滑"""
+    values = np.asarray(values, dtype=float)
+    if window_size <= 1 or len(values) < 3:
+        return values.copy()
+
+    window_size = min(window_size, len(values))
+    if window_size % 2 == 0:
+        window_size += 1
+
+    pad = window_size // 2
+    padded = np.pad(values, (pad, pad), mode='edge')
+    kernel = np.ones(window_size, dtype=float) / window_size
+    return np.convolve(padded, kernel, mode='valid')
+
+
+def smooth_swcc_curve(suction_data, theta_data, window_size=5, enforce_monotonic=True):
+    """对逐点预测的SWCC进行轻微平滑并强制单调非增"""
+    suction_data = np.asarray(suction_data, dtype=float)
+    theta_data = np.asarray(theta_data, dtype=float)
+
+    order = np.argsort(suction_data)
+    theta_sorted = theta_data[order]
+
+    smoothed = moving_average_with_padding(theta_sorted, window_size=window_size)
+    smoothed = np.clip(smoothed, 0, 1)
+
+    if enforce_monotonic:
+        smoothed = np.minimum.accumulate(smoothed)
+
+    smoothed = np.clip(smoothed, 0, 1)
+    result = np.empty_like(smoothed)
+    result[order] = smoothed
+    return result
+
+
+def estimate_curve_characteristic_suction(suction_data, theta_data, se_threshold=0.95):
+    """基于曲线本身估计近似进气点（Se阈值法）"""
+    suction_data = np.asarray(suction_data, dtype=float)
+    theta_data = np.asarray(theta_data, dtype=float)
+
+    if len(suction_data) < 2:
+        return np.nan
+
+    order = np.argsort(suction_data)
+    suction_sorted = suction_data[order]
+    theta_sorted = theta_data[order]
+
+    theta_s = float(np.max(theta_sorted))
+    theta_r = float(np.min(theta_sorted))
+    span = theta_s - theta_r
+    if span <= 1e-6:
+        return np.nan
+
+    se = (theta_sorted - theta_r) / span
+    se = np.clip(se, 0, 1)
+
+    crossing_idx = np.where(se <= se_threshold)[0]
+    if len(crossing_idx) == 0:
+        return np.nan
+
+    idx = int(crossing_idx[0])
+    if idx == 0:
+        return float(suction_sorted[0])
+
+    x1, x2 = np.log10(suction_sorted[idx - 1]), np.log10(suction_sorted[idx])
+    y1, y2 = se[idx - 1], se[idx]
+
+    if np.isclose(y1, y2):
+        return float(suction_sorted[idx])
+
+    x_cross = x1 + (se_threshold - y1) * (x2 - x1) / (y2 - y1)
+    return float(10 ** x_cross)
+
+
 def fit_vg_model(suction_data, theta_data, initial_guess=None):
     """
     对SWCC数据进行VG模型拟合
@@ -139,42 +214,47 @@ def fit_vg_model(suction_data, theta_data, initial_guess=None):
     - r_squared: 决定系数R²
     - fitted_theta: 拟合值
     """
-    # 默认初始猜测
+    suction_data = np.asarray(suction_data, dtype=float)
+    theta_data = np.asarray(theta_data, dtype=float)
+
+    order = np.argsort(suction_data)
+    suction_data = suction_data[order]
+    theta_data = theta_data[order]
+
     if initial_guess is None:
-        # θr: 最小含水率的90%
-        # θs: 最大含水率的110%
-        # α: 1/中值吸力
-        # n: 典型值1.5
-        theta_min = np.min(theta_data)
-        theta_max = np.max(theta_data)
-        suction_median = np.median(suction_data[suction_data > 0])
+        theta_min = float(np.min(theta_data))
+        theta_max = float(np.max(theta_data))
+        h95 = estimate_curve_characteristic_suction(suction_data, theta_data, se_threshold=0.95)
+        suction_median = np.median(suction_data[suction_data > 0]) if np.any(suction_data > 0) else 1.0
+        alpha_guess = 1.0 / h95 if np.isfinite(h95) and h95 > 0 else 1.0 / suction_median
 
         initial_guess = [
-            max(0, theta_min * 0.9),  # θr
-            min(0.5, theta_max * 1.1),  # θs
-            1.0 / suction_median if suction_median > 0 else 0.01,  # α
-            1.5  # n
+            max(0, theta_min * 0.95),
+            min(0.8, theta_max * 1.02),
+            max(alpha_guess, 1e-5),
+            1.4
         ]
 
-    # 参数边界条件
-    lower_bounds = [0, 0, 0.00001, 1.01]  # n必须大于1
-    upper_bounds = [0.5, 0.6, 10, 10]  # 合理范围
+    lower_bounds = [0, 0, 1e-6, 1.01]
+    upper_bounds = [0.8, 1.0, 100, 8]
 
     try:
-        # 使用curve_fit进行拟合
+        log_h = np.log10(np.clip(suction_data, 1e-6, None))
+        log_h_norm = (log_h - log_h.min()) / (log_h.max() - log_h.min() + 1e-12)
+        sigma = 0.7 + 0.9 * log_h_norm
+
         popt, pcov = curve_fit(
             vg_model,
             suction_data,
             theta_data,
             p0=initial_guess,
             bounds=(lower_bounds, upper_bounds),
-            maxfev=5000
+            sigma=sigma,
+            absolute_sigma=False,
+            maxfev=12000
         )
 
-        # 计算拟合值
         fitted_theta = vg_model(suction_data, *popt)
-
-        # 计算R²
         residuals = theta_data - fitted_theta
         ss_res = np.sum(residuals ** 2)
         ss_tot = np.sum((theta_data - np.mean(theta_data)) ** 2)
@@ -187,64 +267,176 @@ def fit_vg_model(suction_data, theta_data, initial_guess=None):
         return None, None, 0, None
 
 
-def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_point=None):
+def evaluate_swcc_quality(suction_data, raw_theta, processed_theta, vg_params=None, r_squared=None):
+    """评估SWCC曲线和平滑后VG参数的可靠性"""
+    suction_data = np.asarray(suction_data, dtype=float)
+    raw_theta = np.asarray(raw_theta, dtype=float)
+    processed_theta = np.asarray(processed_theta, dtype=float)
+
+    if len(raw_theta) < 2:
+        return {'reliable_vg': False, 'warnings': ['曲线点数过少，无法评价可靠性'], 'quality_label': '低'}
+
+    raw_diff = np.diff(raw_theta)
+    monotonic_violations = int(np.sum(raw_diff > 1e-4))
+    violation_ratio = monotonic_violations / max(len(raw_diff), 1)
+    mean_adjustment = float(np.mean(np.abs(processed_theta - raw_theta)))
+    max_adjustment = float(np.max(np.abs(processed_theta - raw_theta)))
+    theta_span = float(np.max(processed_theta) - np.min(processed_theta))
+
+    curve_h95 = estimate_curve_characteristic_suction(suction_data, processed_theta, se_threshold=0.95)
+    curve_h50 = estimate_curve_characteristic_suction(suction_data, processed_theta, se_threshold=0.5)
+
+    warnings_list = []
+    score = 0
+
+    if theta_span >= 0.02:
+        score += 1
+    else:
+        warnings_list.append('曲线起伏较小，VG参数可能不稳定')
+
+    if violation_ratio <= 0.05:
+        score += 1
+    elif violation_ratio > 0.15:
+        warnings_list.append('原始XGBoost曲线存在较明显的非单调波动')
+
+    if mean_adjustment <= 0.01:
+        score += 1
+    elif mean_adjustment > 0.02:
+        warnings_list.append('为满足物理单调性，曲线修正幅度较大')
+
+    ha_vg = np.nan
+    agreement_ratio = np.nan
+    theta_r = theta_s = np.nan
+
+    if vg_params is not None:
+        theta_r, theta_s, alpha, n = vg_params
+        ha_vg = 1 / alpha if alpha > 0 else np.nan
+
+        if r_squared is not None and r_squared >= 0.98:
+            score += 1
+        else:
+            warnings_list.append('VG整体拟合优度偏低，参数更适合用于参考展示')
+
+        if theta_s > theta_r:
+            score += 1
+        else:
+            warnings_list.append('VG参数中 θs 未大于 θr，物理意义不足')
+
+        if np.isfinite(ha_vg) and np.isfinite(curve_h95) and min(ha_vg, curve_h95) > 0:
+            agreement_ratio = max(ha_vg, curve_h95) / min(ha_vg, curve_h95)
+            if agreement_ratio <= 3:
+                score += 1
+            else:
+                warnings_list.append('VG特征吸力与曲线近似进气点差异较大')
+        else:
+            warnings_list.append('无法稳定估计近似进气点，建议谨慎解释进气值')
+
+    quality_label = '高' if score >= 5 else ('中' if score >= 3 else '低')
+
+    reliable_vg = bool(
+        vg_params is not None and
+        (r_squared is not None and r_squared >= 0.98) and
+        violation_ratio <= 0.10 and
+        mean_adjustment <= 0.02 and
+        theta_span >= 0.02 and
+        np.isfinite(ha_vg) and
+        (not np.isfinite(agreement_ratio) or agreement_ratio <= 4) and
+        theta_s > theta_r
+    )
+
+    return {
+        'monotonic_violations': monotonic_violations,
+        'violation_ratio': violation_ratio,
+        'mean_adjustment': mean_adjustment,
+        'max_adjustment': max_adjustment,
+        'theta_span': theta_span,
+        'curve_h95': curve_h95,
+        'curve_h50': curve_h50,
+        'ha_vg': ha_vg,
+        'agreement_ratio': agreement_ratio,
+        'warnings': warnings_list,
+        'quality_label': quality_label,
+        'reliable_vg': reliable_vg
+    }
+
+
+def plot_swcc_with_vg_fit(suction_range, raw_predictions, processed_predictions=None, vg_params=None,
+                          current_point=None, show_raw_curve=True):
     """绘制SWCC曲线和VG模型拟合结果"""
-    # 创建图形
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # 确保使用中文字体
     plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'Microsoft YaHei']
     plt.rcParams['axes.unicode_minus'] = False
 
-    # 主图：SWCC曲线
-    ax.plot(suction_range, predictions, 'b-', linewidth=2, label='SWCC (XGBoost)')
+    raw_predictions = np.asarray(raw_predictions, dtype=float)
+    processed_predictions = raw_predictions if processed_predictions is None else np.asarray(processed_predictions, dtype=float)
 
-    # 如果提供了VG拟合参数，绘制拟合曲线
+    if show_raw_curve and np.any(np.abs(raw_predictions - processed_predictions) > 1e-6):
+        ax.plot(suction_range, raw_predictions, color='0.7', linestyle='--', linewidth=1.5, label='SWCC (XGBoost原始曲线)')
+
+    ax.plot(suction_range, processed_predictions, 'b-', linewidth=2.2, label='SWCC (单调平滑后)')
+
     if vg_params is not None:
         theta_r, theta_s, alpha, n = vg_params
-        m = 1 - 1 / n
         fitted_curve = vg_model(suction_range, theta_r, theta_s, alpha, n)
-        ax.plot(suction_range, fitted_curve, 'r--', linewidth=2, label=' vG model fitting curve')
+        ax.plot(suction_range, fitted_curve, 'r--', linewidth=2, label='VG拟合曲线')
 
-        # 在图中添加VG方程
-        vg_eq = r'$\theta = \theta_r + \frac{\theta_s - \theta_r}{[1 + (\alpha h)^n]^m}$'
+        vg_eq = 'VG: θ = θr + (θs - θr) / [1 + (αh)^n]^m'
         ax.text(0.02, 0.98, vg_eq, transform=ax.transAxes, fontsize=12,
-                verticalalignment='top', bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+                verticalalignment='top', bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
 
-    # 如果提供了当前点，在图上标出
     if current_point:
-        ax.plot(current_point[0], current_point[1], 'ro', markersize=10, label='Current prediction point')
-        ax.annotate(f'({current_point[0]:.1f} kPa, {current_point[1]:.3f})',
-                    xy=current_point,
-                    xytext=(current_point[0] * 1.5, current_point[1] * 0.9),
-                    arrowprops=dict(arrowstyle='->', color='red'),
-                    fontsize=10, color='red')
+        ax.plot(current_point[0], current_point[1], 'ro', markersize=9, label='当前单点预测')
+        ax.annotate(f'({current_point[0]:.1f} kPa, {current_point[1]:.3f})', xy=current_point,
+                    xytext=(current_point[0] * 1.5, current_point[1] * 0.92),
+                    arrowprops=dict(arrowstyle='->', color='red'), fontsize=10, color='red')
 
-    # 设置主图坐标轴
     ax.set_xscale('log')
     ax.set_xlabel('Suction (kPa)', fontsize=12)
     ax.set_ylabel('Volumetric water content', fontsize=12)
-    ax.set_title(' SWCC and the VG model fitting curve', fontsize=14, fontweight='bold')
+    ax.set_title('SWCC and VG fitting results', fontsize=14, fontweight='bold')
     ax.grid(True, alpha=0.3, linestyle='--')
     ax.legend(loc='best', fontsize=10)
     ax.set_facecolor('#f8f9fa')
 
-    # 设置坐标轴范围
     ax.set_xlim(min(suction_range), max(suction_range))
-    y_min = max(0, min(predictions) - 0.05)
-    y_max = min(1, max(predictions) + 0.05)
+    y_min = max(0, min(np.min(raw_predictions), np.min(processed_predictions)) - 0.05)
+    y_max = min(1, max(np.max(raw_predictions), np.max(processed_predictions)) + 0.05)
     ax.set_ylim(y_min, y_max)
 
-    # 吸力范围标记
-    ax.text(0.02, 0.02, f'Suction range: {min(suction_range):.2f} - {max(suction_range):.0f} kPa',
+    ax.text(0.02, 0.02, f'Suction range: {min(suction_range):.3f} - {max(suction_range):.0f} kPa',
             transform=ax.transAxes, fontsize=9,
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
 
     plt.tight_layout()
     return fig
 
 
-def display_vg_parameters(popt, r_squared, suction_range, theta_data):
+def display_swcc_diagnostics(quality_info):
+    """显示SWCC曲线诊断信息"""
+    st.markdown('<div class="sub-header">🩺 曲线诊断与VG可靠性</div>', unsafe_allow_html=True)
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric('可靠性等级', quality_info.get('quality_label', '-'))
+    with col2:
+        st.metric('原始曲线非单调点占比', f"{quality_info.get('violation_ratio', 0) * 100:.1f}%")
+    with col3:
+        st.metric('平均修正幅度', f"{quality_info.get('mean_adjustment', 0):.4f}")
+    with col4:
+        curve_h95 = quality_info.get('curve_h95', np.nan)
+        st.metric('曲线近似进气点 h95', '-' if not np.isfinite(curve_h95) else f"{curve_h95:.3f} kPa")
+
+    if quality_info.get('reliable_vg', False):
+        st.success('✅ 当前案例中，VG拟合可用于曲线参数化展示；VG特征吸力具有较好的参考性。')
+    else:
+        st.warning('⚠️ 当前案例中，VG拟合更适合作为辅助展示，论文中建议以单调平滑后的XGBoost-SWCC曲线为主。')
+
+    for item in quality_info.get('warnings', []):
+        st.info(f'• {item}')
+
+
+def display_vg_parameters(popt, r_squared, suction_range, theta_data, quality_info=None):
     """显示VG模型参数"""
     if popt is None:
         st.warning("VG模型拟合失败，无法显示参数")
@@ -253,7 +445,6 @@ def display_vg_parameters(popt, r_squared, suction_range, theta_data):
     theta_r, theta_s, alpha, n = popt
     m = 1 - 1 / n
 
-    # 创建参数表格
     st.markdown('<div class="sub-header">📊 VG模型拟合参数</div>', unsafe_allow_html=True)
 
     col1, col2 = st.columns(2)
@@ -261,28 +452,11 @@ def display_vg_parameters(popt, r_squared, suction_range, theta_data):
     with col1:
         st.markdown('<div class="parameter-table">', unsafe_allow_html=True)
         st.markdown("##### 模型参数")
-
         param_data = {
-            '参数': ['θr (残余含水率)', 'θs (饱和含水率)', 'α (倒数的吸力)', 'n (形状参数)', 'm (=1-1/n)',
-                     'R² (决定系数)'],
-            '值': [
-                f"{theta_r:.6f}",
-                f"{theta_s:.6f}",
-                f"{alpha:.6f}",
-                f"{n:.6f}",
-                f"{m:.6f}",
-                f"{r_squared:.6f}"
-            ],
-            '物理意义': [
-                '高吸力下的最小含水率',
-                '零吸力下的最大含水率',
-                '进气值的倒数',
-                '孔径分布指数',
-                '曲线形状参数',
-                '拟合优度 (1为完美拟合)'
-            ]
+            '参数': ['θr (残余含水率)', 'θs (饱和含水率)', 'α (倒数的吸力)', 'n (形状参数)', 'm (=1-1/n)', 'R² (决定系数)'],
+            '值': [f"{theta_r:.6f}", f"{theta_s:.6f}", f"{alpha:.6f}", f"{n:.6f}", f"{m:.6f}", f"{r_squared:.6f}"],
+            '物理意义': ['高吸力下的最小含水率', '零吸力下的最大含水率', 'VG参数化控制项', '孔径分布指数', '曲线形状参数', '拟合优度 (1为完美拟合)']
         }
-
         param_df = pd.DataFrame(param_data)
         st.dataframe(param_df, use_container_width=True, hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
@@ -291,37 +465,23 @@ def display_vg_parameters(popt, r_squared, suction_range, theta_data):
         st.markdown('<div class="parameter-table">', unsafe_allow_html=True)
         st.markdown("##### 特征吸力值")
 
-        # 计算特征吸力
-        # 进气值 (air entry value)
-        ha = 1 / alpha if alpha > 0 else 0
-
-        # 有效饱和度为0.5时的吸力
+        ha = 1 / alpha if alpha > 0 else np.nan
         se = 0.5
-        h50 = (1 / alpha) * ((1 / se ** (1 / m)) - 1) ** (1 / n) if alpha > 0 and m > 0 and n > 0 else 0
+        h50 = (1 / alpha) * ((1 / se ** (1 / m)) - 1) ** (1 / n) if alpha > 0 and m > 0 and n > 0 else np.nan
+        curve_h95 = quality_info.get('curve_h95', np.nan) if quality_info else np.nan
+        agreement_ratio = quality_info.get('agreement_ratio', np.nan) if quality_info else np.nan
 
         feature_data = {
-            '特征点': ['进气值 ha', 'Se=0.5时吸力 h₅₀', '预测最小吸力', '预测最大吸力', '数据点数量'],
-            '吸力值 (kPa)': [
-                f"{ha:.3f}",
-                f"{h50:.3f}",
-                f"{np.min(suction_range):.3f}",
-                f"{np.max(suction_range):.3f}",
-                f"{len(suction_range)}"
-            ],
-            '备注': [
-                '1/α',
-                'Se = (θ-θr)/(θs-θr) = 0.5',
-                '曲线起点',
-                '曲线终点',
-                'SWCC曲线点数'
-            ]
+            '特征点': ['VG特征吸力 ha', '曲线近似进气点 h95', 'Se=0.5时吸力 h₅₀', '预测最小吸力', '预测最大吸力'],
+            '吸力值 (kPa)': ['-' if not np.isfinite(ha) else f"{ha:.3f}", '-' if not np.isfinite(curve_h95) else f"{curve_h95:.3f}", '-' if not np.isfinite(h50) else f"{h50:.3f}", f"{np.min(suction_range):.3f}", f"{np.max(suction_range):.3f}"],
+            '备注': ['1/α（VG参数化特征值）', 'Se=0.95对应的曲线近似进气点', 'Se = (θ-θr)/(θs-θr) = 0.5', '曲线起点', '曲线终点']
         }
-
         feature_df = pd.DataFrame(feature_data)
         st.dataframe(feature_df, use_container_width=True, hide_index=True)
+        if np.isfinite(agreement_ratio):
+            st.caption(f"VG特征吸力与曲线近似进气点的比值: {agreement_ratio:.2f}")
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # 显示VG模型方程
     st.markdown('<div class="vg-equation">', unsafe_allow_html=True)
     st.markdown("### van Genuchten (VG) 模型方程")
     st.latex(r'''
@@ -338,28 +498,14 @@ def display_vg_parameters(popt, r_squared, suction_range, theta_data):
     ''')
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # 提供参数下载
-    vg_params_dict = {
-        'theta_r': theta_r,
-        'theta_s': theta_s,
-        'alpha': alpha,
-        'n': n,
-        'm': m,
-        'R_squared': r_squared,
-        'ha': ha,
-        'h50': h50
-    }
-
+    vg_params_dict = {'theta_r': theta_r, 'theta_s': theta_s, 'alpha': alpha, 'n': n, 'm': m, 'R_squared': r_squared,
+                      'ha_vg': ha, 'curve_h95': np.nan if quality_info is None else quality_info.get('curve_h95', np.nan),
+                      'h50': h50, 'VG_reliable': False if quality_info is None else quality_info.get('reliable_vg', False)}
     vg_params_df = pd.DataFrame([vg_params_dict])
-
     csv_params = vg_params_df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 下载VG模型参数",
-        data=csv_params,
-        file_name=f"VG_model_parameters_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
+    st.download_button(label="📥 下载VG模型参数", data=csv_params,
+                       file_name=f"VG_model_parameters_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                       mime="text/csv", use_container_width=True)
 
 
 # 加载模型
@@ -453,7 +599,7 @@ def generate_swcc_curve(model, model_type, base_input, suction_range):
         prediction = model.predict(features_df)[0]
         predictions.append(prediction)
 
-    return predictions
+    return np.asarray(predictions, dtype=float)
 
 
 def batch_predict_group1(model, data_df, feature_info):
@@ -659,6 +805,22 @@ def main():
             enable_vg_fitting = st.checkbox("启用VG模型拟合", value=True,
                                             help="对生成的SWCC曲线进行van Genuchten模型拟合",
                                             key="enable_vg_fitting")
+
+            apply_monotonic_smoothing = st.checkbox(
+                "拟合前进行单调平滑处理",
+                value=True,
+                help="先对XGBoost逐点预测曲线进行轻微平滑，并强制含水率随吸力非增，以提高VG拟合稳定性",
+                key="apply_monotonic_smoothing"
+            )
+
+            show_raw_curve = st.checkbox(
+                "图中显示原始XGBoost曲线",
+                value=True,
+                help="便于对比平滑前后的SWCC形态差异",
+                key="show_raw_curve"
+            )
+
+            st.caption("建议将吸力范围设置在案例实验数据覆盖区间内，过宽的范围会降低VG参数尤其是进气值的稳定性。")
 
             curve_points = st.slider(
                 "曲线点数",
@@ -1548,57 +1710,69 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
             min_suction = st.session_state.get('min_suction', 0.01)
             max_suction = st.session_state.get('max_suction', 284804.0)
             enable_vg_fitting = st.session_state.get('enable_vg_fitting', True)
+            apply_monotonic_smoothing = st.session_state.get('apply_monotonic_smoothing', True)
+            show_raw_curve = st.session_state.get('show_raw_curve', True)
 
-            # 检查max_suction是否大于min_suction
             if max_suction <= min_suction:
                 st.warning("最大吸力必须大于最小吸力，已自动调整")
                 max_suction = min_suction * 100
                 st.session_state['max_suction'] = max_suction
 
-            # 生成SWCC曲线
             st.markdown('<div class="sub-header">📈 SWCC曲线</div>', unsafe_allow_html=True)
 
-            # 生成吸力范围（对数均匀分布）
             suction_range = np.logspace(np.log10(min_suction), np.log10(max_suction), curve_points)
 
-            # 生成SWCC曲线数据
             with st.spinner("正在生成SWCC曲线..."):
-                predictions = generate_swcc_curve(model, model_type, input_data, suction_range)
+                raw_predictions = generate_swcc_curve(model, model_type, input_data, suction_range)
 
-                # VG模型拟合
+                if apply_monotonic_smoothing:
+                    processed_predictions = smooth_swcc_curve(suction_range, raw_predictions, window_size=5,
+                                                             enforce_monotonic=True)
+                else:
+                    processed_predictions = np.asarray(raw_predictions, dtype=float)
+
                 vg_params = None
                 r_squared = 0
                 fitted_curve = None
 
                 if enable_vg_fitting:
                     with st.spinner("正在进行VG模型拟合..."):
-                        popt, pcov, r_squared, fitted_curve = fit_vg_model(suction_range, predictions)
+                        popt, pcov, r_squared, fitted_curve = fit_vg_model(suction_range, processed_predictions)
 
                         if popt is not None:
                             vg_params = popt
                             st.success(f"✅ VG模型拟合成功！R² = {r_squared:.6f}")
 
-                # 绘制SWCC曲线
+                quality_info = evaluate_swcc_quality(suction_range, raw_predictions, processed_predictions,
+                                                     vg_params=vg_params, r_squared=r_squared if vg_params is not None else None)
+
                 current_point = (suction, prediction) if suction >= min_suction and suction <= max_suction else None
 
-                fig = plot_swcc_with_vg_fit(suction_range, predictions, vg_params, current_point)
+                fig = plot_swcc_with_vg_fit(
+                    suction_range,
+                    raw_predictions,
+                    processed_predictions=processed_predictions,
+                    vg_params=vg_params,
+                    current_point=current_point,
+                    show_raw_curve=show_raw_curve
+                )
 
                 st.pyplot(fig)
+                display_swcc_diagnostics(quality_info)
 
-                # 显示VG模型参数
                 if enable_vg_fitting and vg_params is not None:
-                    display_vg_parameters(vg_params, r_squared, suction_range, predictions)
+                    display_vg_parameters(vg_params, r_squared, suction_range, processed_predictions, quality_info)
 
-                # 提供曲线数据下载
                 curve_data = pd.DataFrame({
                     'Suction(kPa)': suction_range,
-                    'Volumetric_Water_Content': predictions
+                    'XGBoost_Raw_Water_Content': raw_predictions,
+                    'Monotonic_Smoothed_Water_Content': processed_predictions
                 })
 
-                # 如果有VG拟合结果，添加到数据中
                 if fitted_curve is not None:
                     curve_data['VG_Fitted_Water_Content'] = fitted_curve
-                    curve_data['Residual'] = predictions - fitted_curve
+                    curve_data['Residual_After_Smoothing'] = processed_predictions - fitted_curve
+                    curve_data['Raw_minus_Smoothed'] = raw_predictions - processed_predictions
 
                 csv_curve = curve_data.to_csv(index=False).encode('utf-8')
                 st.download_button(
@@ -1611,13 +1785,8 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
                 )
 
         except Exception as e:
-            err_text = str(e)
-            st.error(f"❌ 运行失败: {e}")
-
-            if "ParseException" in err_text or "Expected end of text" in err_text:
-                st.warning("检测到公式渲染错误，而不是模型或特征顺序错误。请使用本次修复后的代码文件。")
-            else:
-                st.error("请检查输入数据、特征顺序或模型文件")
+            st.error(f"❌ 预测失败: {e}")
+            st.error("请检查特征顺序或模型文件")
 
             # 显示详细错误信息
             with st.expander("🔍 查看详细错误信息"):
