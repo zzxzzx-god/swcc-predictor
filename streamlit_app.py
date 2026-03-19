@@ -116,18 +116,23 @@ st.markdown("""
 
 
 
-def create_excel_bytes(sheets_dict):
-    """将多个DataFrame写入Excel字节流，优先使用xlsxwriter，缺失时回退到openpyxl。"""
-    excel_buffer = io.BytesIO()
-
-    engine = None
+def get_excel_writer_engine():
+    """检测当前环境可用的 Excel 写入引擎。"""
     if importlib.util.find_spec('xlsxwriter') is not None:
-        engine = 'xlsxwriter'
-    elif importlib.util.find_spec('openpyxl') is not None:
-        engine = 'openpyxl'
-    else:
-        raise ModuleNotFoundError('当前环境缺少 xlsxwriter 和 openpyxl，无法生成 Excel 文件。请安装其中任意一个，或改用 CSV 下载。')
+        return 'xlsxwriter'
+    if importlib.util.find_spec('openpyxl') is not None:
+        return 'openpyxl'
+    return None
 
+
+
+def create_excel_bytes(sheets_dict):
+    """将多个DataFrame写入Excel字节流；若环境缺少依赖则返回None。"""
+    engine = get_excel_writer_engine()
+    if engine is None:
+        return None
+
+    excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine=engine) as writer:
         for sheet_name, df in sheets_dict.items():
             safe_name = str(sheet_name)[:31] if sheet_name else 'Sheet1'
@@ -1308,6 +1313,10 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
         # 下载模板文件
         st.markdown("### 📥 下载模板")
         st.caption("建议优先下载 Excel 模板（.xlsx），可避免中文在 Excel 中显示乱码。")
+        excel_engine = get_excel_writer_engine()
+        excel_available = excel_engine is not None
+        if not excel_available:
+            st.info("当前部署环境未安装 Excel 写入依赖，已自动切换为仅提供 CSV 下载。")
 
         if model_type == 'group1':
             # 创建变量组一模板
@@ -1328,16 +1337,17 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                 '说明': ['吸力（kPa）', '黏土含量', '粉土含量', '砂土含量', '干密度（g/cm³）', '生物炭添加量（%）', '热解温度（℃）', '生物炭类型'],
                 '备注': ['数值型', '建议 0-1', '建议 0-1', '建议 0-1', '数值型', '百分数，如 5 表示 5%', 'BC=0 时可填 0', '示例：农业废弃物、林业残余物']
             })
-            excel_bytes = create_excel_bytes({'模板数据': template_df, '填写说明': instruction_df})
-
-            st.download_button(
-                label="下载变量组一 Excel 模板",
-                data=excel_bytes,
-                file_name="template_group1.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="download_template_group1_excel"
-            )
+            if excel_available:
+                excel_bytes = create_excel_bytes({'模板数据': template_df, '填写说明': instruction_df})
+                if excel_bytes is not None:
+                    st.download_button(
+                        label="下载变量组一 Excel 模板",
+                        data=excel_bytes,
+                        file_name="template_group1.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="download_template_group1_excel"
+                    )
 
             csv = template_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
             st.download_button(
@@ -1368,16 +1378,17 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                 '说明': ['吸力（kPa）', '黏土含量', '粉土含量', '砂土含量', '干密度（g/cm³）', '生物炭添加量（%）', '酸碱度 pH', '灰分含量（%）', '碳含量（%）'],
                 '备注': ['数值型', '建议 0-1', '建议 0-1', '建议 0-1', '数值型', '百分数，如 5 表示 5%', 'BC=0 时可填 0', 'BC=0 时可填 0', 'BC=0 时可填 0']
             })
-            excel_bytes = create_excel_bytes({'模板数据': template_df, '填写说明': instruction_df})
-
-            st.download_button(
-                label="下载变量组二 Excel 模板",
-                data=excel_bytes,
-                file_name="template_group2.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="download_template_group2_excel"
-            )
+            if excel_available:
+                excel_bytes = create_excel_bytes({'模板数据': template_df, '填写说明': instruction_df})
+                if excel_bytes is not None:
+                    st.download_button(
+                        label="下载变量组二 Excel 模板",
+                        data=excel_bytes,
+                        file_name="template_group2.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="download_template_group2_excel"
+                    )
 
             csv = template_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
             st.download_button(
@@ -1511,17 +1522,19 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                         )
 
                     with col_dl2:
-                        # 转换为Excel格式
+                        # 转换为Excel格式（若环境支持）
                         excel_bytes = create_excel_bytes({'prediction results': result_df})
-
-                        st.download_button(
-                            label="📥 下载Excel格式",
-                            data=excel_bytes,
-                            file_name=f"batch_predictions_{model_type}_{timestamp}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True,
-                            key="download_excel_batch"
-                        )
+                        if excel_bytes is not None:
+                            st.download_button(
+                                label="📥 下载Excel格式",
+                                data=excel_bytes,
+                                file_name=f"batch_predictions_{model_type}_{timestamp}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True,
+                                key="download_excel_batch"
+                            )
+                        else:
+                            st.info("当前环境未安装 Excel 写入依赖，本次仅支持下载 CSV 结果。")
 
                     # 显示预测结果详情
                     with st.expander("📋 查看详细预测结果"):
