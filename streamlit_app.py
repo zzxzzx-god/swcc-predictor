@@ -4,9 +4,9 @@ import pandas as pd
 import numpy as np
 import pickle
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 import io
 import warnings
-import importlib.util
 from scipy.optimize import curve_fit
 
 warnings.filterwarnings('ignore')
@@ -14,9 +14,59 @@ warnings.filterwarnings('ignore')
 # 设置matplotlib中文字体（放在导入后立即设置）
 import matplotlib
 
-matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
-matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'Microsoft YaHei']
-matplotlib.rcParams['axes.unicode_minus'] = False
+
+def _detect_cjk_font():
+    """检测当前环境可用的中文/CJK字体。"""
+    candidate_fonts = [
+        'Noto Sans CJK JP',
+        'Noto Serif CJK JP',
+        'Microsoft YaHei',
+        'SimHei',
+        'WenQuanYi Micro Hei',
+        'WenQuanYi Zen Hei',
+        'PingFang SC',
+        'Heiti SC',
+        'Source Han Sans CN',
+        'Source Han Sans SC',
+        'Arial Unicode MS',
+        'AR PL KaitiM GB'
+    ]
+    available_fonts = {font.name for font in font_manager.fontManager.ttflist}
+    for font_name in candidate_fonts:
+        if font_name in available_fonts:
+            return font_name
+    return None
+
+
+CJK_FONT_NAME = _detect_cjk_font()
+MATPLOTLIB_FONT_FALLBACKS = [
+    font_name for font_name in [
+        CJK_FONT_NAME,
+        'Microsoft YaHei',
+        'SimHei',
+        'WenQuanYi Micro Hei',
+        'Noto Sans CJK JP',
+        'Arial Unicode MS',
+        'DejaVu Sans'
+    ] if font_name
+]
+HAS_CJK_FONT = CJK_FONT_NAME is not None
+
+
+def configure_matplotlib_fonts():
+    """统一设置matplotlib字体，尽量保证中文可显示。"""
+    matplotlib.rcParams['font.sans-serif'] = MATPLOTLIB_FONT_FALLBACKS
+    matplotlib.rcParams['axes.unicode_minus'] = False
+    plt.rcParams['font.sans-serif'] = MATPLOTLIB_FONT_FALLBACKS
+    plt.rcParams['axes.unicode_minus'] = False
+
+
+configure_matplotlib_fonts()
+
+
+def plot_text(chinese_text, english_text=None):
+    """图中优先显示中文；若部署环境无中文字体则回退到英文。"""
+    return chinese_text if HAS_CJK_FONT or english_text is None else english_text
 
 # 设置页面配置
 st.set_page_config(
@@ -114,33 +164,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-
-
-def get_excel_writer_engine():
-    """检测当前环境可用的 Excel 写入引擎。"""
-    if importlib.util.find_spec('xlsxwriter') is not None:
-        return 'xlsxwriter'
-    if importlib.util.find_spec('openpyxl') is not None:
-        return 'openpyxl'
-    return None
-
-
-
-def create_excel_bytes(sheets_dict):
-    """将多个DataFrame写入Excel字节流；若环境缺少依赖则返回None。"""
-    engine = get_excel_writer_engine()
-    if engine is None:
-        return None
-
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer, engine=engine) as writer:
-        for sheet_name, df in sheets_dict.items():
-            safe_name = str(sheet_name)[:31] if sheet_name else 'Sheet1'
-            df.to_excel(writer, index=False, sheet_name=safe_name)
-
-    excel_buffer.seek(0)
-    return excel_buffer.getvalue()
-
 # VG模型函数定义
 def vg_model(h, theta_r, theta_s, alpha, n):
     """
@@ -150,81 +173,6 @@ def vg_model(h, theta_r, theta_s, alpha, n):
     """
     m = 1 - 1 / n
     return theta_r + (theta_s - theta_r) / ((1 + (alpha * h) ** n) ** m)
-
-
-def moving_average_with_padding(values, window_size=5):
-    """边界友好的移动平均平滑"""
-    values = np.asarray(values, dtype=float)
-    if window_size <= 1 or len(values) < 3:
-        return values.copy()
-
-    window_size = min(window_size, len(values))
-    if window_size % 2 == 0:
-        window_size += 1
-
-    pad = window_size // 2
-    padded = np.pad(values, (pad, pad), mode='edge')
-    kernel = np.ones(window_size, dtype=float) / window_size
-    return np.convolve(padded, kernel, mode='valid')
-
-
-def smooth_swcc_curve(suction_data, theta_data, window_size=5, enforce_monotonic=True):
-    """对逐点预测的SWCC进行轻微平滑并强制单调非增"""
-    suction_data = np.asarray(suction_data, dtype=float)
-    theta_data = np.asarray(theta_data, dtype=float)
-
-    order = np.argsort(suction_data)
-    theta_sorted = theta_data[order]
-
-    smoothed = moving_average_with_padding(theta_sorted, window_size=window_size)
-    smoothed = np.clip(smoothed, 0, 1)
-
-    if enforce_monotonic:
-        smoothed = np.minimum.accumulate(smoothed)
-
-    smoothed = np.clip(smoothed, 0, 1)
-    result = np.empty_like(smoothed)
-    result[order] = smoothed
-    return result
-
-
-def estimate_curve_characteristic_suction(suction_data, theta_data, se_threshold=0.95):
-    """基于曲线本身估计近似进气点（Se阈值法）"""
-    suction_data = np.asarray(suction_data, dtype=float)
-    theta_data = np.asarray(theta_data, dtype=float)
-
-    if len(suction_data) < 2:
-        return np.nan
-
-    order = np.argsort(suction_data)
-    suction_sorted = suction_data[order]
-    theta_sorted = theta_data[order]
-
-    theta_s = float(np.max(theta_sorted))
-    theta_r = float(np.min(theta_sorted))
-    span = theta_s - theta_r
-    if span <= 1e-6:
-        return np.nan
-
-    se = (theta_sorted - theta_r) / span
-    se = np.clip(se, 0, 1)
-
-    crossing_idx = np.where(se <= se_threshold)[0]
-    if len(crossing_idx) == 0:
-        return np.nan
-
-    idx = int(crossing_idx[0])
-    if idx == 0:
-        return float(suction_sorted[0])
-
-    x1, x2 = np.log10(suction_sorted[idx - 1]), np.log10(suction_sorted[idx])
-    y1, y2 = se[idx - 1], se[idx]
-
-    if np.isclose(y1, y2):
-        return float(suction_sorted[idx])
-
-    x_cross = x1 + (se_threshold - y1) * (x2 - x1) / (y2 - y1)
-    return float(10 ** x_cross)
 
 
 def fit_vg_model(suction_data, theta_data, initial_guess=None):
@@ -242,47 +190,42 @@ def fit_vg_model(suction_data, theta_data, initial_guess=None):
     - r_squared: 决定系数R²
     - fitted_theta: 拟合值
     """
-    suction_data = np.asarray(suction_data, dtype=float)
-    theta_data = np.asarray(theta_data, dtype=float)
-
-    order = np.argsort(suction_data)
-    suction_data = suction_data[order]
-    theta_data = theta_data[order]
-
+    # 默认初始猜测
     if initial_guess is None:
-        theta_min = float(np.min(theta_data))
-        theta_max = float(np.max(theta_data))
-        h95 = estimate_curve_characteristic_suction(suction_data, theta_data, se_threshold=0.95)
-        suction_median = np.median(suction_data[suction_data > 0]) if np.any(suction_data > 0) else 1.0
-        alpha_guess = 1.0 / h95 if np.isfinite(h95) and h95 > 0 else 1.0 / suction_median
+        # θr: 最小含水率的90%
+        # θs: 最大含水率的110%
+        # α: 1/中值吸力
+        # n: 典型值1.5
+        theta_min = np.min(theta_data)
+        theta_max = np.max(theta_data)
+        suction_median = np.median(suction_data[suction_data > 0])
 
         initial_guess = [
-            max(0, theta_min * 0.95),
-            min(0.8, theta_max * 1.02),
-            max(alpha_guess, 1e-5),
-            1.4
+            max(0, theta_min * 0.9),  # θr
+            min(0.5, theta_max * 1.1),  # θs
+            1.0 / suction_median if suction_median > 0 else 0.01,  # α
+            1.5  # n
         ]
 
-    lower_bounds = [0, 0, 1e-6, 1.01]
-    upper_bounds = [0.8, 1.0, 100, 8]
+    # 参数边界条件
+    lower_bounds = [0, 0, 0.00001, 1.01]  # n必须大于1
+    upper_bounds = [0.5, 0.6, 10, 10]  # 合理范围
 
     try:
-        log_h = np.log10(np.clip(suction_data, 1e-6, None))
-        log_h_norm = (log_h - log_h.min()) / (log_h.max() - log_h.min() + 1e-12)
-        sigma = 0.7 + 0.9 * log_h_norm
-
+        # 使用curve_fit进行拟合
         popt, pcov = curve_fit(
             vg_model,
             suction_data,
             theta_data,
             p0=initial_guess,
             bounds=(lower_bounds, upper_bounds),
-            sigma=sigma,
-            absolute_sigma=False,
-            maxfev=12000
+            maxfev=5000
         )
 
+        # 计算拟合值
         fitted_theta = vg_model(suction_data, *popt)
+
+        # 计算R²
         residuals = theta_data - fitted_theta
         ss_res = np.sum(residuals ** 2)
         ss_tot = np.sum((theta_data - np.mean(theta_data)) ** 2)
@@ -295,176 +238,63 @@ def fit_vg_model(suction_data, theta_data, initial_guess=None):
         return None, None, 0, None
 
 
-def evaluate_swcc_quality(suction_data, raw_theta, processed_theta, vg_params=None, r_squared=None):
-    """评估SWCC曲线和平滑后VG参数的可靠性"""
-    suction_data = np.asarray(suction_data, dtype=float)
-    raw_theta = np.asarray(raw_theta, dtype=float)
-    processed_theta = np.asarray(processed_theta, dtype=float)
-
-    if len(raw_theta) < 2:
-        return {'reliable_vg': False, 'warnings': ['曲线点数过少，无法评价可靠性'], 'quality_label': '低'}
-
-    raw_diff = np.diff(raw_theta)
-    monotonic_violations = int(np.sum(raw_diff > 1e-4))
-    violation_ratio = monotonic_violations / max(len(raw_diff), 1)
-    mean_adjustment = float(np.mean(np.abs(processed_theta - raw_theta)))
-    max_adjustment = float(np.max(np.abs(processed_theta - raw_theta)))
-    theta_span = float(np.max(processed_theta) - np.min(processed_theta))
-
-    curve_h95 = estimate_curve_characteristic_suction(suction_data, processed_theta, se_threshold=0.95)
-    curve_h50 = estimate_curve_characteristic_suction(suction_data, processed_theta, se_threshold=0.5)
-
-    warnings_list = []
-    score = 0
-
-    if theta_span >= 0.02:
-        score += 1
-    else:
-        warnings_list.append('曲线起伏较小，VG参数可能不稳定')
-
-    if violation_ratio <= 0.05:
-        score += 1
-    elif violation_ratio > 0.15:
-        warnings_list.append('原始XGBoost曲线存在较明显的非单调波动')
-
-    if mean_adjustment <= 0.01:
-        score += 1
-    elif mean_adjustment > 0.02:
-        warnings_list.append('为满足物理单调性，曲线修正幅度较大')
-
-    ha_vg = np.nan
-    agreement_ratio = np.nan
-    theta_r = theta_s = np.nan
-
-    if vg_params is not None:
-        theta_r, theta_s, alpha, n = vg_params
-        ha_vg = 1 / alpha if alpha > 0 else np.nan
-
-        if r_squared is not None and r_squared >= 0.98:
-            score += 1
-        else:
-            warnings_list.append('VG整体拟合优度偏低，参数更适合用于参考展示')
-
-        if theta_s > theta_r:
-            score += 1
-        else:
-            warnings_list.append('VG参数中 θs 未大于 θr，物理意义不足')
-
-        if np.isfinite(ha_vg) and np.isfinite(curve_h95) and min(ha_vg, curve_h95) > 0:
-            agreement_ratio = max(ha_vg, curve_h95) / min(ha_vg, curve_h95)
-            if agreement_ratio <= 3:
-                score += 1
-            else:
-                warnings_list.append('VG特征吸力与曲线近似进气点差异较大')
-        else:
-            warnings_list.append('无法稳定估计近似进气点，建议谨慎解释进气值')
-
-    quality_label = '高' if score >= 5 else ('中' if score >= 3 else '低')
-
-    reliable_vg = bool(
-        vg_params is not None and
-        (r_squared is not None and r_squared >= 0.98) and
-        violation_ratio <= 0.10 and
-        mean_adjustment <= 0.02 and
-        theta_span >= 0.02 and
-        np.isfinite(ha_vg) and
-        (not np.isfinite(agreement_ratio) or agreement_ratio <= 4) and
-        theta_s > theta_r
-    )
-
-    return {
-        'monotonic_violations': monotonic_violations,
-        'violation_ratio': violation_ratio,
-        'mean_adjustment': mean_adjustment,
-        'max_adjustment': max_adjustment,
-        'theta_span': theta_span,
-        'curve_h95': curve_h95,
-        'curve_h50': curve_h50,
-        'ha_vg': ha_vg,
-        'agreement_ratio': agreement_ratio,
-        'warnings': warnings_list,
-        'quality_label': quality_label,
-        'reliable_vg': reliable_vg
-    }
-
-
-def plot_swcc_with_vg_fit(suction_range, raw_predictions, processed_predictions=None, vg_params=None,
-                          current_point=None, show_raw_curve=True):
+def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_point=None):
     """绘制SWCC曲线和VG模型拟合结果"""
+    # 创建图形
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'Microsoft YaHei']
-    plt.rcParams['axes.unicode_minus'] = False
+    # 确保使用中文字体
+    configure_matplotlib_fonts()
 
-    raw_predictions = np.asarray(raw_predictions, dtype=float)
-    processed_predictions = raw_predictions if processed_predictions is None else np.asarray(processed_predictions, dtype=float)
+    # 主图：SWCC曲线
+    ax.plot(suction_range, predictions, 'b-', linewidth=2, label=plot_text('SWCC（XGBoost预测曲线）', 'SWCC (XGBoost prediction curve)'))
 
-    if show_raw_curve and np.any(np.abs(raw_predictions - processed_predictions) > 1e-6):
-        ax.plot(suction_range, raw_predictions, color='0.7', linestyle='--', linewidth=1.5, label='SWCC (XGBoost原始曲线)')
-
-    ax.plot(suction_range, processed_predictions, 'b-', linewidth=2.2, label='SWCC (单调平滑后)')
-
+    # 如果提供了VG拟合参数，绘制拟合曲线
     if vg_params is not None:
         theta_r, theta_s, alpha, n = vg_params
+        m = 1 - 1 / n
         fitted_curve = vg_model(suction_range, theta_r, theta_s, alpha, n)
-        ax.plot(suction_range, fitted_curve, 'r--', linewidth=2, label='VG拟合曲线')
+        ax.plot(suction_range, fitted_curve, 'r--', linewidth=2, label=plot_text('VG拟合曲线', 'VG fitted curve'))
 
-        vg_eq = 'VG: θ = θr + (θs - θr) / [1 + (αh)^n]^m'
+        # 在图中添加VG方程
+        vg_eq = plot_text('VG：θ = θr + (θs - θr) / [1 + (αh)^n]^m', 'VG: θ = θr + (θs - θr) / [1 + (αh)^n]^m')
         ax.text(0.02, 0.98, vg_eq, transform=ax.transAxes, fontsize=12,
-                verticalalignment='top', bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+                verticalalignment='top', bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
 
+    # 如果提供了当前点，在图上标出
     if current_point:
-        ax.plot(current_point[0], current_point[1], 'ro', markersize=9, label='当前单点预测')
-        ax.annotate(f'({current_point[0]:.1f} kPa, {current_point[1]:.3f})', xy=current_point,
-                    xytext=(current_point[0] * 1.5, current_point[1] * 0.92),
-                    arrowprops=dict(arrowstyle='->', color='red'), fontsize=10, color='red')
+        ax.plot(current_point[0], current_point[1], 'ro', markersize=10, label=plot_text('当前单点预测', 'Current single-point prediction'))
+        ax.annotate(f'({current_point[0]:.1f} kPa, {current_point[1]:.3f})',
+                    xy=current_point,
+                    xytext=(current_point[0] * 1.5, current_point[1] * 0.9),
+                    arrowprops=dict(arrowstyle='->', color='red'),
+                    fontsize=10, color='red')
 
+    # 设置主图坐标轴
     ax.set_xscale('log')
-    ax.set_xlabel('Suction (kPa)', fontsize=12)
-    ax.set_ylabel('Volumetric water content', fontsize=12)
-    ax.set_title('SWCC and VG fitting results', fontsize=14, fontweight='bold')
+    ax.set_xlabel(plot_text('吸力 (kPa)', 'Suction (kPa)'), fontsize=12)
+    ax.set_ylabel(plot_text('体积含水率', 'Volumetric water content'), fontsize=12)
+    ax.set_title(plot_text('SWCC 与 VG 拟合结果', 'SWCC and VG fitting results'), fontsize=14, fontweight='bold')
     ax.grid(True, alpha=0.3, linestyle='--')
     ax.legend(loc='best', fontsize=10)
     ax.set_facecolor('#f8f9fa')
 
+    # 设置坐标轴范围
     ax.set_xlim(min(suction_range), max(suction_range))
-    y_min = max(0, min(np.min(raw_predictions), np.min(processed_predictions)) - 0.05)
-    y_max = min(1, max(np.max(raw_predictions), np.max(processed_predictions)) + 0.05)
+    y_min = max(0, min(predictions) - 0.05)
+    y_max = min(1, max(predictions) + 0.05)
     ax.set_ylim(y_min, y_max)
 
-    ax.text(0.02, 0.02, f'Suction range: {min(suction_range):.3f} - {max(suction_range):.0f} kPa',
+    # 吸力范围标记
+    ax.text(0.02, 0.02, plot_text(f'吸力范围: {min(suction_range):.2f} - {max(suction_range):.0f} kPa', f'Suction range: {min(suction_range):.2f} - {max(suction_range):.0f} kPa'),
             transform=ax.transAxes, fontsize=9,
-            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
 
     plt.tight_layout()
     return fig
 
 
-def display_swcc_diagnostics(quality_info):
-    """显示SWCC曲线诊断信息"""
-    st.markdown('<div class="sub-header">🩺 曲线诊断与VG可靠性</div>', unsafe_allow_html=True)
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric('可靠性等级', quality_info.get('quality_label', '-'))
-    with col2:
-        st.metric('原始曲线非单调点占比', f"{quality_info.get('violation_ratio', 0) * 100:.1f}%")
-    with col3:
-        st.metric('平均修正幅度', f"{quality_info.get('mean_adjustment', 0):.4f}")
-    with col4:
-        curve_h95 = quality_info.get('curve_h95', np.nan)
-        st.metric('曲线近似进气点 h95', '-' if not np.isfinite(curve_h95) else f"{curve_h95:.3f} kPa")
-
-    if quality_info.get('reliable_vg', False):
-        st.success('✅ 当前案例中，VG拟合可用于曲线参数化展示；VG特征吸力具有较好的参考性。')
-    else:
-        st.warning('⚠️ 当前案例中，VG拟合更适合作为辅助展示，论文中建议以单调平滑后的XGBoost-SWCC曲线为主。')
-
-    for item in quality_info.get('warnings', []):
-        st.info(f'• {item}')
-
-
-def display_vg_parameters(popt, r_squared, suction_range, theta_data, quality_info=None):
+def display_vg_parameters(popt, r_squared, suction_range, theta_data):
     """显示VG模型参数"""
     if popt is None:
         st.warning("VG模型拟合失败，无法显示参数")
@@ -473,6 +303,7 @@ def display_vg_parameters(popt, r_squared, suction_range, theta_data, quality_in
     theta_r, theta_s, alpha, n = popt
     m = 1 - 1 / n
 
+    # 创建参数表格
     st.markdown('<div class="sub-header">📊 VG模型拟合参数</div>', unsafe_allow_html=True)
 
     col1, col2 = st.columns(2)
@@ -480,11 +311,28 @@ def display_vg_parameters(popt, r_squared, suction_range, theta_data, quality_in
     with col1:
         st.markdown('<div class="parameter-table">', unsafe_allow_html=True)
         st.markdown("##### 模型参数")
+
         param_data = {
-            '参数': ['θr (残余含水率)', 'θs (饱和含水率)', 'α (倒数的吸力)', 'n (形状参数)', 'm (=1-1/n)', 'R² (决定系数)'],
-            '值': [f"{theta_r:.6f}", f"{theta_s:.6f}", f"{alpha:.6f}", f"{n:.6f}", f"{m:.6f}", f"{r_squared:.6f}"],
-            '物理意义': ['高吸力下的最小含水率', '零吸力下的最大含水率', 'VG参数化控制项', '孔径分布指数', '曲线形状参数', '拟合优度 (1为完美拟合)']
+            '参数': ['θr (残余含水率)', 'θs (饱和含水率)', 'α (倒数的吸力)', 'n (形状参数)', 'm (=1-1/n)',
+                     'R² (决定系数)'],
+            '值': [
+                f"{theta_r:.6f}",
+                f"{theta_s:.6f}",
+                f"{alpha:.6f}",
+                f"{n:.6f}",
+                f"{m:.6f}",
+                f"{r_squared:.6f}"
+            ],
+            '物理意义': [
+                '高吸力下的最小含水率',
+                '零吸力下的最大含水率',
+                '进气值的倒数',
+                '孔径分布指数',
+                '曲线形状参数',
+                '拟合优度 (1为完美拟合)'
+            ]
         }
+
         param_df = pd.DataFrame(param_data)
         st.dataframe(param_df, use_container_width=True, hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
@@ -493,23 +341,37 @@ def display_vg_parameters(popt, r_squared, suction_range, theta_data, quality_in
         st.markdown('<div class="parameter-table">', unsafe_allow_html=True)
         st.markdown("##### 特征吸力值")
 
-        ha = 1 / alpha if alpha > 0 else np.nan
+        # 计算特征吸力
+        # 进气值 (air entry value)
+        ha = 1 / alpha if alpha > 0 else 0
+
+        # 有效饱和度为0.5时的吸力
         se = 0.5
-        h50 = (1 / alpha) * ((1 / se ** (1 / m)) - 1) ** (1 / n) if alpha > 0 and m > 0 and n > 0 else np.nan
-        curve_h95 = quality_info.get('curve_h95', np.nan) if quality_info else np.nan
-        agreement_ratio = quality_info.get('agreement_ratio', np.nan) if quality_info else np.nan
+        h50 = (1 / alpha) * ((1 / se ** (1 / m)) - 1) ** (1 / n) if alpha > 0 and m > 0 and n > 0 else 0
 
         feature_data = {
-            '特征点': ['VG特征吸力 ha', '曲线近似进气点 h95', 'Se=0.5时吸力 h₅₀', '预测最小吸力', '预测最大吸力'],
-            '吸力值 (kPa)': ['-' if not np.isfinite(ha) else f"{ha:.3f}", '-' if not np.isfinite(curve_h95) else f"{curve_h95:.3f}", '-' if not np.isfinite(h50) else f"{h50:.3f}", f"{np.min(suction_range):.3f}", f"{np.max(suction_range):.3f}"],
-            '备注': ['1/α（VG参数化特征值）', 'Se=0.95对应的曲线近似进气点', 'Se = (θ-θr)/(θs-θr) = 0.5', '曲线起点', '曲线终点']
+            '特征点': ['进气值 ha', 'Se=0.5时吸力 h₅₀', '预测最小吸力', '预测最大吸力', '数据点数量'],
+            '吸力值 (kPa)': [
+                f"{ha:.3f}",
+                f"{h50:.3f}",
+                f"{np.min(suction_range):.3f}",
+                f"{np.max(suction_range):.3f}",
+                f"{len(suction_range)}"
+            ],
+            '备注': [
+                '1/α',
+                'Se = (θ-θr)/(θs-θr) = 0.5',
+                '曲线起点',
+                '曲线终点',
+                'SWCC曲线点数'
+            ]
         }
+
         feature_df = pd.DataFrame(feature_data)
         st.dataframe(feature_df, use_container_width=True, hide_index=True)
-        if np.isfinite(agreement_ratio):
-            st.caption(f"VG特征吸力与曲线近似进气点的比值: {agreement_ratio:.2f}")
         st.markdown('</div>', unsafe_allow_html=True)
 
+    # 显示VG模型方程
     st.markdown('<div class="vg-equation">', unsafe_allow_html=True)
     st.markdown("### van Genuchten (VG) 模型方程")
     st.latex(r'''
@@ -526,14 +388,28 @@ def display_vg_parameters(popt, r_squared, suction_range, theta_data, quality_in
     ''')
     st.markdown('</div>', unsafe_allow_html=True)
 
-    vg_params_dict = {'theta_r': theta_r, 'theta_s': theta_s, 'alpha': alpha, 'n': n, 'm': m, 'R_squared': r_squared,
-                      'ha_vg': ha, 'curve_h95': np.nan if quality_info is None else quality_info.get('curve_h95', np.nan),
-                      'h50': h50, 'VG_reliable': False if quality_info is None else quality_info.get('reliable_vg', False)}
+    # 提供参数下载
+    vg_params_dict = {
+        'theta_r': theta_r,
+        'theta_s': theta_s,
+        'alpha': alpha,
+        'n': n,
+        'm': m,
+        'R_squared': r_squared,
+        'ha': ha,
+        'h50': h50
+    }
+
     vg_params_df = pd.DataFrame([vg_params_dict])
+
     csv_params = vg_params_df.to_csv(index=False).encode('utf-8')
-    st.download_button(label="📥 下载VG模型参数", data=csv_params,
-                       file_name=f"VG_model_parameters_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                       mime="text/csv", use_container_width=True)
+    st.download_button(
+        label="📥 下载VG模型参数",
+        data=csv_params,
+        file_name=f"VG_model_parameters_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
 
 
 # 加载模型
@@ -627,7 +503,7 @@ def generate_swcc_curve(model, model_type, base_input, suction_range):
         prediction = model.predict(features_df)[0]
         predictions.append(prediction)
 
-    return np.asarray(predictions, dtype=float)
+    return predictions
 
 
 def batch_predict_group1(model, data_df, feature_info):
@@ -833,22 +709,6 @@ def main():
             enable_vg_fitting = st.checkbox("启用VG模型拟合", value=True,
                                             help="对生成的SWCC曲线进行van Genuchten模型拟合",
                                             key="enable_vg_fitting")
-
-            apply_monotonic_smoothing = st.checkbox(
-                "拟合前进行单调平滑处理",
-                value=True,
-                help="先对XGBoost逐点预测曲线进行轻微平滑，并强制含水率随吸力非增，以提高VG拟合稳定性",
-                key="apply_monotonic_smoothing"
-            )
-
-            show_raw_curve = st.checkbox(
-                "图中显示原始XGBoost曲线",
-                value=True,
-                help="便于对比平滑前后的SWCC形态差异",
-                key="show_raw_curve"
-            )
-
-            st.caption("建议将吸力范围设置在案例实验数据覆盖区间内，过宽的范围会降低VG参数尤其是进气值的稳定性。")
 
             curve_points = st.slider(
                 "曲线点数",
@@ -1312,12 +1172,6 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
     with col2:
         # 下载模板文件
         st.markdown("### 📥 下载模板")
-        st.caption("建议优先下载 Excel 模板（.xlsx），可避免中文在 Excel 中显示乱码。")
-        excel_engine = get_excel_writer_engine()
-        excel_available = excel_engine is not None
-        if not excel_available:
-            st.info("当前部署环境未安装 Excel 写入依赖，已自动切换为仅提供 CSV 下载。")
-
         if model_type == 'group1':
             # 创建变量组一模板
             template_data = {
@@ -1331,32 +1185,15 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                 'Biochar_type_combined': ['农业废弃物', '林业残余物', '农业废弃物']
             }
             template_df = pd.DataFrame(template_data)
+            csv = template_df.to_csv(index=False).encode('utf-8')
 
-            instruction_df = pd.DataFrame({
-                '字段': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature', 'Biochar_type_combined'],
-                '说明': ['吸力（kPa）', '黏土含量', '粉土含量', '砂土含量', '干密度（g/cm³）', '生物炭添加量（%）', '热解温度（℃）', '生物炭类型'],
-                '备注': ['数值型', '建议 0-1', '建议 0-1', '建议 0-1', '数值型', '百分数，如 5 表示 5%', 'BC=0 时可填 0', '示例：农业废弃物、林业残余物']
-            })
-            if excel_available:
-                excel_bytes = create_excel_bytes({'模板数据': template_df, '填写说明': instruction_df})
-                if excel_bytes is not None:
-                    st.download_button(
-                        label="下载变量组一 Excel 模板",
-                        data=excel_bytes,
-                        file_name="template_group1.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                        key="download_template_group1_excel"
-                    )
-
-            csv = template_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
             st.download_button(
-                label="下载变量组一 CSV 模板",
+                label="下载变量组一模板",
                 data=csv,
                 file_name="template_group1.csv",
                 mime="text/csv",
                 use_container_width=True,
-                key="download_template_group1_csv"
+                key="download_template_group1"
             )
         else:
             # 创建变量组二模板
@@ -1372,32 +1209,15 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                 'CT': [60.0, 65.0, 0.0]  # 百分数
             }
             template_df = pd.DataFrame(template_data)
+            csv = template_df.to_csv(index=False).encode('utf-8')
 
-            instruction_df = pd.DataFrame({
-                '字段': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'pH', 'AT', 'CT'],
-                '说明': ['吸力（kPa）', '黏土含量', '粉土含量', '砂土含量', '干密度（g/cm³）', '生物炭添加量（%）', '酸碱度 pH', '灰分含量（%）', '碳含量（%）'],
-                '备注': ['数值型', '建议 0-1', '建议 0-1', '建议 0-1', '数值型', '百分数，如 5 表示 5%', 'BC=0 时可填 0', 'BC=0 时可填 0', 'BC=0 时可填 0']
-            })
-            if excel_available:
-                excel_bytes = create_excel_bytes({'模板数据': template_df, '填写说明': instruction_df})
-                if excel_bytes is not None:
-                    st.download_button(
-                        label="下载变量组二 Excel 模板",
-                        data=excel_bytes,
-                        file_name="template_group2.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                        key="download_template_group2_excel"
-                    )
-
-            csv = template_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
             st.download_button(
-                label="下载变量组二 CSV 模板",
+                label="下载变量组二模板",
                 data=csv,
                 file_name="template_group2.csv",
                 mime="text/csv",
                 use_container_width=True,
-                key="download_template_group2_csv"
+                key="download_template_group2"
             )
 
     # 如果有文件上传，显示预览和进行预测
@@ -1472,8 +1292,7 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                     fig, ax = plt.subplots(figsize=(10, 6))
 
                     # 确保使用中文字体
-                    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'Microsoft YaHei']
-                    plt.rcParams['axes.unicode_minus'] = False
+                    configure_matplotlib_fonts()
 
                     # 绘制直方图
                     valid_predictions = result_df['预测体积含水率'].dropna()
@@ -1484,9 +1303,9 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                         ax.axvline(valid_predictions.median(), color='green', linestyle='--', linewidth=2,
                                    label=f'median: {valid_predictions.median():.3f}')
 
-                        ax.set_xlabel('Volumetric water content', fontsize=12)
-                        ax.set_ylabel('frequency', fontsize=12)
-                        ax.set_title('Distribution histogram of prediction results', fontsize=14, fontweight='bold')
+                        ax.set_xlabel(plot_text('体积含水率', 'Volumetric water content'), fontsize=12)
+                        ax.set_ylabel(plot_text('频数', 'Frequency'), fontsize=12)
+                        ax.set_title(plot_text('预测结果分布直方图', 'Distribution histogram of prediction results'), fontsize=14, fontweight='bold')
                         ax.legend()
                         ax.grid(True, alpha=0.3)
 
@@ -1522,19 +1341,20 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                         )
 
                     with col_dl2:
-                        # 转换为Excel格式（若环境支持）
-                        excel_bytes = create_excel_bytes({'prediction results': result_df})
-                        if excel_bytes is not None:
-                            st.download_button(
-                                label="📥 下载Excel格式",
-                                data=excel_bytes,
-                                file_name=f"batch_predictions_{model_type}_{timestamp}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                use_container_width=True,
-                                key="download_excel_batch"
-                            )
-                        else:
-                            st.info("当前环境未安装 Excel 写入依赖，本次仅支持下载 CSV 结果。")
+                        # 转换为Excel格式
+                        excel_buffer = io.BytesIO()
+                        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                            result_df.to_excel(writer, index=False, sheet_name='prediction results')
+                        excel_buffer.seek(0)
+
+                        st.download_button(
+                            label="📥 下载Excel格式",
+                            data=excel_buffer,
+                            file_name=f"batch_predictions_{model_type}_{timestamp}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            key="download_excel_batch"
+                        )
 
                     # 显示预测结果详情
                     with st.expander("📋 查看详细预测结果"):
@@ -1777,69 +1597,57 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
             min_suction = st.session_state.get('min_suction', 0.01)
             max_suction = st.session_state.get('max_suction', 284804.0)
             enable_vg_fitting = st.session_state.get('enable_vg_fitting', True)
-            apply_monotonic_smoothing = st.session_state.get('apply_monotonic_smoothing', True)
-            show_raw_curve = st.session_state.get('show_raw_curve', True)
 
+            # 检查max_suction是否大于min_suction
             if max_suction <= min_suction:
                 st.warning("最大吸力必须大于最小吸力，已自动调整")
                 max_suction = min_suction * 100
                 st.session_state['max_suction'] = max_suction
 
+            # 生成SWCC曲线
             st.markdown('<div class="sub-header">📈 SWCC曲线</div>', unsafe_allow_html=True)
 
+            # 生成吸力范围（对数均匀分布）
             suction_range = np.logspace(np.log10(min_suction), np.log10(max_suction), curve_points)
 
+            # 生成SWCC曲线数据
             with st.spinner("正在生成SWCC曲线..."):
-                raw_predictions = generate_swcc_curve(model, model_type, input_data, suction_range)
+                predictions = generate_swcc_curve(model, model_type, input_data, suction_range)
 
-                if apply_monotonic_smoothing:
-                    processed_predictions = smooth_swcc_curve(suction_range, raw_predictions, window_size=5,
-                                                             enforce_monotonic=True)
-                else:
-                    processed_predictions = np.asarray(raw_predictions, dtype=float)
-
+                # VG模型拟合
                 vg_params = None
                 r_squared = 0
                 fitted_curve = None
 
                 if enable_vg_fitting:
                     with st.spinner("正在进行VG模型拟合..."):
-                        popt, pcov, r_squared, fitted_curve = fit_vg_model(suction_range, processed_predictions)
+                        popt, pcov, r_squared, fitted_curve = fit_vg_model(suction_range, predictions)
 
                         if popt is not None:
                             vg_params = popt
                             st.success(f"✅ VG模型拟合成功！R² = {r_squared:.6f}")
 
-                quality_info = evaluate_swcc_quality(suction_range, raw_predictions, processed_predictions,
-                                                     vg_params=vg_params, r_squared=r_squared if vg_params is not None else None)
-
+                # 绘制SWCC曲线
                 current_point = (suction, prediction) if suction >= min_suction and suction <= max_suction else None
 
-                fig = plot_swcc_with_vg_fit(
-                    suction_range,
-                    raw_predictions,
-                    processed_predictions=processed_predictions,
-                    vg_params=vg_params,
-                    current_point=current_point,
-                    show_raw_curve=show_raw_curve
-                )
+                fig = plot_swcc_with_vg_fit(suction_range, predictions, vg_params, current_point)
 
                 st.pyplot(fig)
-                display_swcc_diagnostics(quality_info)
 
+                # 显示VG模型参数
                 if enable_vg_fitting and vg_params is not None:
-                    display_vg_parameters(vg_params, r_squared, suction_range, processed_predictions, quality_info)
+                    display_vg_parameters(vg_params, r_squared, suction_range, predictions)
 
+                # 提供曲线数据下载
                 curve_data = pd.DataFrame({
                     'Suction(kPa)': suction_range,
-                    'XGBoost_Raw_Water_Content': raw_predictions,
-                    'Monotonic_Smoothed_Water_Content': processed_predictions
+                    'Volumetric_Water_Content': predictions
                 })
 
+                # 如果有VG拟合结果，添加到数据中
                 if fitted_curve is not None:
                     curve_data['VG_Fitted_Water_Content'] = fitted_curve
-                    curve_data['Residual_After_Smoothing'] = processed_predictions - fitted_curve
-                    curve_data['Raw_minus_Smoothed'] = raw_predictions - processed_predictions
+                    curve_data['Residual'] = predictions - fitted_curve
 
                 csv_curve = curve_data.to_csv(index=False).encode('utf-8')
                 st.download_button(
