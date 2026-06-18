@@ -8,6 +8,8 @@ from matplotlib import font_manager
 import io
 import warnings
 from scipy.optimize import curve_fit
+import json
+import os
 
 warnings.filterwarnings('ignore')
 
@@ -430,32 +432,37 @@ def load_models():
     """Load two trained XGBoost models"""
     models = {}
 
-    try:
-        # Load group 1 model (with biochar type and pyrolysis temperature)
-        with open('xgboost_optimized_results/model_group1.pkl', 'rb') as f:
-            models['group1'] = pickle.load(f)
-        st.sidebar.success("✅ Group 1 model loaded successfully!")
+    # Try multiple encoding options for pickle files
+    encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'ISO-8859-1']
 
-        # Debug: display model feature names
-        if hasattr(models['group1'], 'feature_names_in_'):
-            st.sidebar.info(f"Model expects features: {list(models['group1'].feature_names_in_)}")
-        else:
-            st.sidebar.info("⚠️ Model does not store feature name information")
+    for model_name in ['group1', 'group2']:
+        model_path = f'xgboost_optimized_results/model_{model_name}.pkl'
 
-    except FileNotFoundError:
-        st.sidebar.warning("⚠️ Group 1 model file not found, please train and save the model first")
-    except Exception as e:
-        st.sidebar.warning(f"⚠️ Group 1 model loading failed: {e}")
+        if not os.path.exists(model_path):
+            st.sidebar.warning(f"⚠️ Model file not found: {model_path}")
+            continue
 
-    try:
-        # Load group 2 model (with biochar physicochemical indicators)
-        with open('xgboost_optimized_results/model_group2.pkl', 'rb') as f:
-            models['group2'] = pickle.load(f)
-        st.sidebar.success("✅ Group 2 model loaded successfully!")
-    except FileNotFoundError:
-        st.sidebar.warning("⚠️ Group 2 model file not found")
-    except Exception as e:
-        st.sidebar.warning(f"⚠️ Group 2 model loading failed: {e}")
+        try:
+            # Try loading with different encodings
+            loaded = False
+            for encoding in encodings_to_try:
+                try:
+                    with open(model_path, 'rb') as f:
+                        models[model_name] = pickle.load(f)
+                    st.sidebar.success(f"✅ Group {model_name[-1]} model loaded successfully!")
+                    loaded = True
+                    break
+                except UnicodeDecodeError:
+                    continue
+                except Exception as e:
+                    st.sidebar.warning(f"⚠️ Error loading with {encoding}: {str(e)[:100]}")
+                    continue
+
+            if not loaded:
+                st.sidebar.warning(f"⚠️ Could not load model {model_name} with any encoding")
+
+        except Exception as e:
+            st.sidebar.warning(f"⚠️ Group {model_name[-1]} model loading failed: {e}")
 
     return models
 
@@ -463,33 +470,64 @@ def load_models():
 # Load feature information
 @st.cache_resource
 def load_feature_info():
-    """Load feature information file"""
-    try:
-        import json
-        with open('xgboost_optimized_results/feature_info.json', 'r', encoding='utf-8') as f:
-            info = json.load(f)
-            # Ensure biochar categories are in Chinese (for model compatibility)
-            if 'group1' in info and 'biochar_categories' in info['group1']:
-                # If categories are in English, convert to Chinese
-                categories = info['group1']['biochar_categories']
-                if any(cat in categories for cat in BIOCHAR_TYPE_DISPLAY):
-                    info['group1']['biochar_categories'] = BIOCHAR_TYPE_INTERNAL.copy()
-            return info
-    except:
-        # If file doesn't exist, return defaults with Chinese categories
-        return {
-            'group1': {
-                'feature_names': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature',
-                                  'Biochar_type_combined'],
-                'feature_order': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature',
-                                  'Biochar_type_combined'],
-                'biochar_categories': BIOCHAR_TYPE_INTERNAL.copy()
-            },
-            'group2': {
-                'feature_names': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'pH', 'AT', 'CT'],
-                'feature_order': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'pH', 'AT', 'CT']
-            }
+    """Load feature information file with robust encoding handling"""
+    feature_info_path = 'xgboost_optimized_results/feature_info.json'
+
+    # Default feature info with Chinese categories
+    default_info = {
+        'group1': {
+            'feature_names': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature',
+                              'Biochar_type_combined'],
+            'feature_order': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature',
+                              'Biochar_type_combined'],
+            'biochar_categories': BIOCHAR_TYPE_INTERNAL.copy()
+        },
+        'group2': {
+            'feature_names': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'pH', 'AT', 'CT'],
+            'feature_order': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'pH', 'AT', 'CT']
         }
+    }
+
+    if not os.path.exists(feature_info_path):
+        st.sidebar.info("ℹ️ feature_info.json not found, using default values")
+        return default_info
+
+    try:
+        # Try UTF-8 first
+        try:
+            with open(feature_info_path, 'r', encoding='utf-8') as f:
+                info = json.load(f)
+        except UnicodeDecodeError:
+            # Try other encodings
+            encodings_to_try = ['latin-1', 'cp1252', 'ISO-8859-1']
+            info = None
+            for encoding in encodings_to_try:
+                try:
+                    with open(feature_info_path, 'r', encoding=encoding) as f:
+                        info = json.load(f)
+                    break
+                except:
+                    continue
+
+            if info is None:
+                st.sidebar.warning("⚠️ Could not decode feature_info.json, using default values")
+                return default_info
+
+        # Ensure biochar categories are in Chinese (for model compatibility)
+        if 'group1' in info and 'biochar_categories' in info['group1']:
+            categories = info['group1']['biochar_categories']
+            # If categories are in English, convert to Chinese
+            if any(cat in categories for cat in BIOCHAR_TYPE_DISPLAY):
+                info['group1']['biochar_categories'] = BIOCHAR_TYPE_INTERNAL.copy()
+            # If categories are empty or invalid, use defaults
+            elif not categories or len(categories) == 0:
+                info['group1']['biochar_categories'] = BIOCHAR_TYPE_INTERNAL.copy()
+
+        return info
+
+    except Exception as e:
+        st.sidebar.warning(f"⚠️ Error loading feature_info.json: {e}, using default values")
+        return default_info
 
 
 def generate_swcc_curve(model, model_type, base_input, suction_range):
@@ -1282,9 +1320,24 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
     # If file is uploaded, show preview and perform prediction
     if uploaded_file is not None:
         try:
-            # Read file
+            # Read file with encoding detection
             if uploaded_file.name.endswith('.csv'):
-                data_df = pd.read_csv(uploaded_file)
+                # Try different encodings for CSV
+                encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'ISO-8859-1']
+                data_df = None
+                for encoding in encodings_to_try:
+                    try:
+                        uploaded_file.seek(0)  # Reset file pointer
+                        data_df = pd.read_csv(uploaded_file, encoding=encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                    except Exception:
+                        continue
+
+                if data_df is None:
+                    st.error("❌ Could not read CSV file with any encoding. Please ensure file is UTF-8 encoded.")
+                    return
             else:
                 data_df = pd.read_excel(uploaded_file)
 
