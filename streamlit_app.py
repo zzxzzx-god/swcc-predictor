@@ -68,6 +68,7 @@ def plot_text(chinese_text, english_text=None):
     """Prefer Chinese in plots; fallback to English if no CJK font available."""
     return chinese_text if HAS_CJK_FONT or english_text is None else english_text
 
+
 # Set page configuration
 st.set_page_config(
     page_title="Biochar-amended Soil SWCC Prediction System",
@@ -163,6 +164,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Biochar type mapping (display English, internal Chinese for model compatibility)
+BIOCHAR_TYPE_DISPLAY = ["Agricultural waste", "Forestry residue", "Livestock manure", "Municipal sludge", "Other"]
+BIOCHAR_TYPE_INTERNAL = ["农业废弃物", "林业残余物", "畜禽粪便", "城市污泥", "其他"]
+BIOCHAR_TYPE_MAP = dict(zip(BIOCHAR_TYPE_DISPLAY, BIOCHAR_TYPE_INTERNAL))
+BIOCHAR_TYPE_REVERSE_MAP = dict(zip(BIOCHAR_TYPE_INTERNAL, BIOCHAR_TYPE_DISPLAY))
+
 
 # VG model function definition
 def vg_model(h, theta_r, theta_s, alpha, n):
@@ -247,7 +254,8 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
     configure_matplotlib_fonts()
 
     # Main plot: SWCC curve
-    ax.plot(suction_range, predictions, 'b-', linewidth=2, label=plot_text('SWCC（XGBoost预测曲线）', 'SWCC (XGBoost prediction curve)'))
+    ax.plot(suction_range, predictions, 'b-', linewidth=2,
+            label=plot_text('SWCC（XGBoost预测曲线）', 'SWCC (XGBoost prediction curve)'))
 
     # If VG fitting parameters are provided, plot the fitted curve
     if vg_params is not None:
@@ -263,7 +271,8 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
 
     # If current point is provided, mark it on the plot
     if current_point:
-        ax.plot(current_point[0], current_point[1], 'ro', markersize=10, label=plot_text('当前单点预测', 'Current single-point prediction'))
+        ax.plot(current_point[0], current_point[1], 'ro', markersize=10,
+                label=plot_text('当前单点预测', 'Current single-point prediction'))
         ax.annotate(f'({current_point[0]:.1f} kPa, {current_point[1]:.3f})',
                     xy=current_point,
                     xytext=(current_point[0] * 1.5, current_point[1] * 0.9),
@@ -286,7 +295,8 @@ def plot_swcc_with_vg_fit(suction_range, predictions, vg_params=None, current_po
     ax.set_ylim(y_min, y_max)
 
     # Suction range annotation
-    ax.text(0.02, 0.02, plot_text(f'吸力范围: {min(suction_range):.2f} - {max(suction_range):.0f} kPa', f'Suction range: {min(suction_range):.2f} - {max(suction_range):.0f} kPa'),
+    ax.text(0.02, 0.02, plot_text(f'吸力范围: {min(suction_range):.2f} - {max(suction_range):.0f} kPa',
+                                  f'Suction range: {min(suction_range):.2f} - {max(suction_range):.0f} kPa'),
             transform=ax.transAxes, fontsize=9,
             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
 
@@ -313,8 +323,9 @@ def display_vg_parameters(popt, r_squared, suction_range, theta_data):
         st.markdown("##### Model Parameters")
 
         param_data = {
-            'Parameter': ['θr (residual water content)', 'θs (saturated water content)', 'α (inverse of suction)', 'n (shape parameter)', 'm (=1-1/n)',
-                     'R² (coefficient of determination)'],
+            'Parameter': ['θr (residual water content)', 'θs (saturated water content)', 'α (inverse of suction)',
+                          'n (shape parameter)', 'm (=1-1/n)',
+                          'R² (coefficient of determination)'],
             'Value': [
                 f"{theta_r:.6f}",
                 f"{theta_s:.6f}",
@@ -350,7 +361,8 @@ def display_vg_parameters(popt, r_squared, suction_range, theta_data):
         h50 = (1 / alpha) * ((1 / se ** (1 / m)) - 1) ** (1 / n) if alpha > 0 and m > 0 and n > 0 else 0
 
         feature_data = {
-            'Characteristic Point': ['Air entry value ha', 'Suction at Se=0.5 h₅₀', 'Min predicted suction', 'Max predicted suction', 'Number of data points'],
+            'Characteristic Point': ['Air entry value ha', 'Suction at Se=0.5 h₅₀', 'Min predicted suction',
+                                     'Max predicted suction', 'Number of data points'],
             'Suction (kPa)': [
                 f"{ha:.3f}",
                 f"{h50:.3f}",
@@ -455,16 +467,23 @@ def load_feature_info():
     try:
         import json
         with open('xgboost_optimized_results/feature_info.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
+            info = json.load(f)
+            # Ensure biochar categories are in Chinese (for model compatibility)
+            if 'group1' in info and 'biochar_categories' in info['group1']:
+                # If categories are in English, convert to Chinese
+                categories = info['group1']['biochar_categories']
+                if any(cat in categories for cat in BIOCHAR_TYPE_DISPLAY):
+                    info['group1']['biochar_categories'] = BIOCHAR_TYPE_INTERNAL.copy()
+            return info
     except:
-        # If file doesn't exist, return defaults
+        # If file doesn't exist, return defaults with Chinese categories
         return {
             'group1': {
                 'feature_names': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature',
                                   'Biochar_type_combined'],
                 'feature_order': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature',
                                   'Biochar_type_combined'],
-                'biochar_categories': ["Agricultural waste", "Forestry residue", "Livestock manure", "Municipal sludge", "Other"]
+                'biochar_categories': BIOCHAR_TYPE_INTERNAL.copy()
             },
             'group2': {
                 'feature_names': ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'pH', 'AT', 'CT'],
@@ -486,7 +505,7 @@ def generate_swcc_curve(model, model_type, base_input, suction_range):
         if model_type == 'group1':
             # Group 1: use categorical features
             feature_order = ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature', 'Biochar_type_combined']
-            biochar_categories = ["Agricultural waste", "Forestry residue", "Livestock manure", "Municipal sludge", "Other"]
+            biochar_categories = BIOCHAR_TYPE_INTERNAL
 
             features_df = pd.DataFrame([input_data])
             features_df['Biochar_type_combined'] = pd.Categorical(
@@ -510,9 +529,8 @@ def batch_predict_group1(model, data_df, feature_info):
     """Batch prediction - Group 1"""
     predictions = []
 
-    # Get feature information and categories
-    biochar_categories = feature_info.get('biochar_categories',
-                                          ["Agricultural waste", "Forestry residue", "Livestock manure", "Municipal sludge", "Other"])
+    # Get feature information and categories (always use Chinese internal categories)
+    biochar_categories = BIOCHAR_TYPE_INTERNAL
 
     for idx, row in data_df.iterrows():
         try:
@@ -525,13 +543,17 @@ def batch_predict_group1(model, data_df, feature_info):
                 'dd': float(row.get('dd', 0)),
                 'BC': float(row.get('BC', 0)) / 100.0,  # Convert to decimal
                 'temperature': float(row.get('temperature', 0)),
-                'Biochar_type_combined': str(row.get('Biochar_type_combined', 'Agricultural waste'))
+                'Biochar_type_combined': str(row.get('Biochar_type_combined', '农业废弃物'))
             }
+
+            # Handle case where biochar type is in English display format
+            if input_data['Biochar_type_combined'] in BIOCHAR_TYPE_DISPLAY:
+                input_data['Biochar_type_combined'] = BIOCHAR_TYPE_MAP[input_data['Biochar_type_combined']]
 
             # When BC=0, adjust parameters
             if input_data['BC'] == 0:
                 input_data['temperature'] = 0.0
-                input_data['Biochar_type_combined'] = 'Agricultural waste'  # Default value
+                input_data['Biochar_type_combined'] = '农业废弃物'  # Default value
 
             # Create DataFrame
             features_df = pd.DataFrame([input_data])
@@ -608,8 +630,7 @@ def validate_batch_data(data_df, model_type, feature_info):
 
     if model_type == 'group1':
         required_columns = ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature', 'Biochar_type_combined']
-        biochar_categories = feature_info.get('biochar_categories',
-                                              ["Agricultural waste", "Forestry residue", "Livestock manure", "Municipal sludge", "Other"])
+        biochar_categories = BIOCHAR_TYPE_INTERNAL
     else:
         required_columns = ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'pH', 'AT', 'CT']
 
@@ -628,9 +649,10 @@ def validate_batch_data(data_df, model_type, feature_info):
                 except:
                     errors.append(f"Column '{col}' contains non-numeric data")
 
-    # Check if biochar type is valid
+    # Check if biochar type is valid (accept both display and internal formats)
     if model_type == 'group1' and 'Biochar_type_combined' in data_df.columns:
-        invalid_types = data_df[~data_df['Biochar_type_combined'].isin(biochar_categories)][
+        valid_types = set(BIOCHAR_TYPE_INTERNAL + BIOCHAR_TYPE_DISPLAY)
+        invalid_types = data_df[~data_df['Biochar_type_combined'].isin(valid_types)][
             'Biochar_type_combined'].unique()
         if len(invalid_types) > 0:
             errors.append(f"Invalid biochar types: {', '.join(invalid_types)}")
@@ -648,7 +670,8 @@ def validate_batch_data(data_df, model_type, feature_info):
 def main():
     """Main application function"""
     # App title
-    st.markdown('<div class="main-header">🌱 Biochar-amended Soil Water Retention Curve (SWCC) Prediction System</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">🌱 Biochar-amended Soil Water Retention Curve (SWCC) Prediction System</div>',
+                unsafe_allow_html=True)
 
     # Load models and feature information
     models = load_models()
@@ -778,8 +801,7 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
 
         # Get feature information
         feature_order = model_info.get('feature_order', [])
-        biochar_categories = model_info.get('biochar_categories',
-                                            ["Agricultural waste", "Forestry residue", "Livestock manure", "Municipal sludge", "Other"])
+        biochar_categories = BIOCHAR_TYPE_INTERNAL
 
         # Create three-column layout
         col1, col2, col3 = st.columns(3)
@@ -881,7 +903,9 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
             # Pyrolysis temperature - dynamically adjusted based on BC value
             if bc == 0:
                 # When BC=0, pyrolysis temperature doesn't exist
-                st.markdown('<div class="warning-box">⚠️ Biochar content is 0, pyrolysis temperature does not exist</div>', unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="warning-box">⚠️ Biochar content is 0, pyrolysis temperature does not exist</div>',
+                    unsafe_allow_html=True)
                 temperature = 0.0
             else:
                 temperature = st.number_input(
@@ -901,24 +925,33 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
             # Biochar type selection - dynamically adjusted based on BC value
             if bc == 0:
                 # When BC=0, biochar type doesn't exist
-                st.markdown('<div class="warning-box">⚠️ Biochar content is 0, biochar type does not exist</div>', unsafe_allow_html=True)
-                biochar_type = "Agricultural waste"  # Default value, won't affect prediction
+                st.markdown('<div class="warning-box">⚠️ Biochar content is 0, biochar type does not exist</div>',
+                            unsafe_allow_html=True)
+                biochar_type_internal = "农业废弃物"  # Default value, won't affect prediction
             else:
-                biochar_type = st.selectbox(
+                # Display English options, store Chinese value internally
+                biochar_type_display = st.selectbox(
                     "Biochar type",
-                    options=biochar_categories,
+                    options=BIOCHAR_TYPE_DISPLAY,
                     index=0,
                     help="Select the raw material type of biochar",
                     key="biochar_type_input"
                 )
+                # Convert to internal Chinese value for model
+                biochar_type_internal = BIOCHAR_TYPE_MAP[biochar_type_display]
 
             st.divider()
 
             # Parameter summary card
             st.markdown("### 📋 Current Parameter Overview")
 
+            # Display the English version in the summary if BC > 0
+            biochar_type_display_value = BIOCHAR_TYPE_REVERSE_MAP.get(biochar_type_internal,
+                                                                      biochar_type_internal) if bc > 0 else "N/A"
+
             param_summary = pd.DataFrame({
-                'Parameter': ['Suction', 'Clay', 'Silt', 'Sand', 'Dry density', 'BC content', 'Pyrolysis temp', 'Biochar type'],
+                'Parameter': ['Suction', 'Clay', 'Silt', 'Sand', 'Dry density', 'BC content', 'Pyrolysis temp',
+                              'Biochar type'],
                 'Value': [
                     f"{suction:.3f} kPa",
                     f"{clay:.3f}",
@@ -926,8 +959,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                     f"{sand:.3f}",
                     f"{dd:.2f} g/cm³",
                     f"{bc_percent:.1f}%",
-                    f"{temperature:.0f}°C",
-                    biochar_type
+                    f"{temperature:.0f}°C" if bc > 0 else "N/A",
+                    biochar_type_display_value
                 ]
             })
 
@@ -1040,7 +1073,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
             # pH value - dynamically adjusted based on BC value
             if bc == 0:
                 # When BC=0, pH is 0
-                st.markdown('<div class="warning-box">⚠️ Biochar content is 0, pH value is 0</div>', unsafe_allow_html=True)
+                st.markdown('<div class="warning-box">⚠️ Biochar content is 0, pH value is 0</div>',
+                            unsafe_allow_html=True)
                 ph = 0.0
             else:
                 ph = st.number_input(
@@ -1059,7 +1093,8 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
 
             # Dynamically adjusted based on BC value
             if bc == 0:
-                st.markdown('<div class="warning-box">⚠️ Biochar content is 0, following parameters set to 0</div>', unsafe_allow_html=True)
+                st.markdown('<div class="warning-box">⚠️ Biochar content is 0, following parameters set to 0</div>',
+                            unsafe_allow_html=True)
                 at = 0.0
                 ct = 0.0
             else:
@@ -1101,13 +1136,36 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                     f"{sand:.3f}",
                     f"{dd:.2f} g/cm³",
                     f"{bc_percent:.1f}%",
-                    f"{ph:.1f}",
-                    f"{at:.1f}%",
-                    f"{ct:.1f}%"
+                    f"{ph:.1f}" if bc > 0 else "N/A",
+                    f"{at:.1f}%" if bc > 0 else "N/A",
+                    f"{ct:.1f}%" if bc > 0 else "N/A"
                 ]
             })
 
             st.dataframe(param_summary, use_container_width=True, hide_index=True)
+
+    # Save variables to session state for prediction function
+    if model_type == 'group1':
+        st.session_state['suction'] = suction
+        st.session_state['clay'] = clay
+        st.session_state['silt'] = silt
+        st.session_state['sand'] = sand
+        st.session_state['dd'] = dd
+        st.session_state['bc_percent'] = bc_percent
+        st.session_state['bc'] = bc
+        st.session_state['temperature'] = temperature if bc > 0 else 0.0
+        st.session_state['biochar_type_internal'] = biochar_type_internal if bc > 0 else "农业废弃物"
+    else:
+        st.session_state['suction'] = suction
+        st.session_state['clay'] = clay
+        st.session_state['silt'] = silt
+        st.session_state['sand'] = sand
+        st.session_state['dd'] = dd
+        st.session_state['bc_percent'] = bc_percent
+        st.session_state['bc'] = bc
+        st.session_state['ph'] = ph if bc > 0 else 0.0
+        st.session_state['at'] = at if bc > 0 else 0.0
+        st.session_state['ct'] = ct if bc > 0 else 0.0
 
     # Prediction button at bottom of page
     st.divider()
@@ -1120,7 +1178,7 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
         with col_btn2:
             if st.button("🚀 Start Single-point Prediction", type="primary", use_container_width=True):
                 # Call single-point prediction function
-                single_point_prediction(models, model_type, model_info, feature_info, locals())
+                single_point_prediction(models, model_type, model_info, feature_info)
 
 
 def display_batch_prediction_interface(models, model_type, model_info, feature_info):
@@ -1140,6 +1198,7 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
         - **Group 1 required columns:** suction, clay, silt, sand, dd, BC, temperature, Biochar_type_combined
         - **Notes:** BC column is in percentage (e.g., 5 means 5%), Biochar_type_combined is biochar type
         - **Biochar type options:** Agricultural waste, Forestry residue, Livestock manure, Municipal sludge, Other
+        - **Note:** You can use either English display names or Chinese internal names
         """)
     else:
         st.markdown("""
@@ -1173,7 +1232,7 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
         # Download template file
         st.markdown("### 📥 Download Template")
         if model_type == 'group1':
-            # Create group 1 template
+            # Create group 1 template with English biochar types
             template_data = {
                 'suction': [100.0, 1000.0, 10000.0],
                 'clay': [0.2, 0.3, 0.1],
@@ -1253,7 +1312,8 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
 
             # Start batch prediction
             st.markdown("### 🚀 Start Batch Prediction")
-            if st.button("Start Batch Prediction", type="primary", use_container_width=True, key="batch_predict_button"):
+            if st.button("Start Batch Prediction", type="primary", use_container_width=True,
+                         key="batch_predict_button"):
                 with st.spinner("Performing batch prediction..."):
                     model = models[model_type]
 
@@ -1268,7 +1328,8 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                     result_df['Predicted Volumetric Water Content'] = predictions
 
                     # Calculate prediction success rate
-                    success_rate = (1 - result_df['Predicted Volumetric Water Content'].isna().sum() / len(result_df)) * 100
+                    success_rate = (1 - result_df['Predicted Volumetric Water Content'].isna().sum() / len(
+                        result_df)) * 100
 
                     # Display prediction results
                     st.markdown("### 📊 Batch Prediction Results")
@@ -1279,7 +1340,8 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                     with col_stat1:
                         st.metric("Total samples", len(result_df))
                     with col_stat2:
-                        st.metric("Successful predictions", len(result_df) - result_df['Predicted Volumetric Water Content'].isna().sum())
+                        st.metric("Successful predictions",
+                                  len(result_df) - result_df['Predicted Volumetric Water Content'].isna().sum())
                     with col_stat3:
                         st.metric("Failed predictions", result_df['Predicted Volumetric Water Content'].isna().sum())
 
@@ -1305,7 +1367,8 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
 
                         ax.set_xlabel(plot_text('体积含水率', 'Volumetric water content'), fontsize=12)
                         ax.set_ylabel(plot_text('频数', 'Frequency'), fontsize=12)
-                        ax.set_title(plot_text('预测结果分布直方图', 'Prediction result distribution histogram'), fontsize=14, fontweight='bold')
+                        ax.set_title(plot_text('预测结果分布直方图', 'Prediction result distribution histogram'),
+                                     fontsize=14, fontweight='bold')
                         ax.legend()
                         ax.grid(True, alpha=0.3)
 
@@ -1365,15 +1428,15 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
             st.error("Please check file format and content")
 
 
-def single_point_prediction(models, model_type, model_info, feature_info, local_vars):
+def single_point_prediction(models, model_type, model_info, feature_info):
     """Execute single-point prediction"""
-    # Get input parameters from local variables
-    suction = local_vars.get('suction', 100.0)
-    clay = local_vars.get('clay', 0.2)
-    silt = local_vars.get('silt', 0.25)
-    sand = local_vars.get('sand', 0.55)
-    dd = local_vars.get('dd', 1.45)
-    bc_percent = local_vars.get('bc_percent', 5.0)
+    # Get input parameters from session state
+    suction = st.session_state.get('suction', 100.0)
+    clay = st.session_state.get('clay', 0.2)
+    silt = st.session_state.get('silt', 0.25)
+    sand = st.session_state.get('sand', 0.55)
+    dd = st.session_state.get('dd', 1.45)
+    bc_percent = st.session_state.get('bc_percent', 5.0)
     bc = bc_percent / 100.0
 
     # Validate input
@@ -1391,15 +1454,14 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
     # Prepare input data based on model type
     if model_type == 'group1':
         # Group 1: use categorical features
-        biochar_categories = model_info.get('biochar_categories',
-                                            ["Agricultural waste", "Forestry residue", "Livestock manure", "Municipal sludge", "Other"])
-        temperature = local_vars.get('temperature', 500.0)
-        biochar_type = local_vars.get('biochar_type', "Agricultural waste")
+        biochar_categories = BIOCHAR_TYPE_INTERNAL
+        temperature = st.session_state.get('temperature', 500.0)
+        biochar_type_internal = st.session_state.get('biochar_type_internal', "农业废弃物")
 
         # When BC=0, set pyrolysis temperature and biochar type to default values
         if bc == 0:
             temperature = 0.0
-            biochar_type = "Agricultural waste"  # Default value
+            biochar_type_internal = "农业废弃物"  # Default value
 
         # Create feature DataFrame - follow training feature order
         features_dict = {
@@ -1410,7 +1472,7 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
             'dd': float(dd),
             'BC': float(bc),  # Decimal form
             'temperature': float(temperature),
-            'Biochar_type_combined': biochar_type  # Categorical feature
+            'Biochar_type_combined': biochar_type_internal  # Categorical feature (Chinese)
         }
 
         # Create DataFrame, ensure Biochar_type_combined is category type
@@ -1435,14 +1497,14 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
             'dd': float(dd),
             'BC': float(bc),
             'temperature': float(temperature),
-            'Biochar_type_combined': biochar_type
+            'Biochar_type_combined': biochar_type_internal
         }
 
     else:
         # Group 2: use raw values directly
-        ph = local_vars.get('ph', 8.0)
-        at = local_vars.get('at', 25.0)
-        ct = local_vars.get('ct', 60.0)
+        ph = st.session_state.get('ph', 8.0)
+        at = st.session_state.get('at', 25.0)
+        ct = st.session_state.get('ct', 60.0)
 
         if bc == 0:
             # Ensure AT, CT, pH are 0 when BC=0
@@ -1536,8 +1598,9 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
                         color = "#FF4500"
                         emoji = "🔴"
 
-                    st.markdown(f"**Assessment:** {emoji} <span style='color:{color};font-weight:bold'>{assessment}</span>",
-                                unsafe_allow_html=True)
+                    st.markdown(
+                        f"**Assessment:** {emoji} <span style='color:{color};font-weight:bold'>{assessment}</span>",
+                        unsafe_allow_html=True)
 
             with col_b:
                 st.markdown("### 📋 Input Parameter Details")
@@ -1567,7 +1630,8 @@ def single_point_prediction(models, model_type, model_info, feature_info, local_
                         display_value = f"{value:.1f}"
                         unit = "-"
                     elif key == 'Biochar_type_combined':
-                        display_value = str(value)
+                        # Display English version
+                        display_value = BIOCHAR_TYPE_REVERSE_MAP.get(value, value)
                         unit = "type"
                     else:
                         display_value = str(value)
