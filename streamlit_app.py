@@ -166,13 +166,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Biochar type mapping - Use numeric encoding for model compatibility
-# Map Chinese biochar types to numeric codes to avoid encoding issues
+# Biochar type mapping
 BIOCHAR_TYPE_DISPLAY = ["Agricultural waste", "Forestry residue", "Livestock manure", "Municipal sludge", "Other"]
 BIOCHAR_TYPE_INTERNAL = ["农业废弃物", "林业残余物", "畜禽粪便", "城市污泥", "其他"]
-# Numeric encoding for model (to avoid Unicode issues)
-BIOCHAR_TYPE_CODES = [0, 1, 2, 3, 4]
-BIOCHAR_TYPE_TO_CODE = dict(zip(BIOCHAR_TYPE_INTERNAL, BIOCHAR_TYPE_CODES))
 BIOCHAR_TYPE_MAP = dict(zip(BIOCHAR_TYPE_DISPLAY, BIOCHAR_TYPE_INTERNAL))
 BIOCHAR_TYPE_REVERSE_MAP = dict(zip(BIOCHAR_TYPE_INTERNAL, BIOCHAR_TYPE_DISPLAY))
 
@@ -189,21 +185,7 @@ def vg_model(h, theta_r, theta_s, alpha, n):
 
 
 def fit_vg_model(suction_data, theta_data, initial_guess=None):
-    """
-    Fit SWCC data with VG model
-
-    Parameters:
-    - suction_data: suction data (kPa)
-    - theta_data: water content data
-    - initial_guess: initial guess parameters [θr, θs, α, n]
-
-    Returns:
-    - popt: optimal fitting parameters
-    - pcov: covariance matrix of parameters
-    - r_squared: coefficient of determination R²
-    - fitted_theta: fitted values
-    """
-    # Default initial guess
+    """Fit SWCC data with VG model"""
     if initial_guess is None:
         theta_min = np.min(theta_data)
         theta_max = np.max(theta_data)
@@ -216,7 +198,6 @@ def fit_vg_model(suction_data, theta_data, initial_guess=None):
             1.5
         ]
 
-    # Parameter bounds
     lower_bounds = [0, 0, 0.00001, 1.01]
     upper_bounds = [0.5, 0.6, 10, 10]
 
@@ -409,10 +390,9 @@ def display_vg_parameters(popt, r_squared, suction_range, theta_data):
 # Load models
 @st.cache_resource
 def load_models():
-    """Load two trained XGBoost models with proper encoding"""
+    """Load two trained XGBoost models"""
     models = {}
 
-    # Try loading with different encodings
     for model_name in ['group1', 'group2']:
         model_path = f'xgboost_optimized_results/model_{model_name}.pkl'
 
@@ -421,25 +401,9 @@ def load_models():
             continue
 
         try:
-            # Load with different encodings
-            loaded = False
-            encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'ISO-8859-1']
-
-            for encoding in encodings_to_try:
-                try:
-                    with open(model_path, 'rb') as f:
-                        models[model_name] = pickle.load(f)
-                    loaded = True
-                    st.sidebar.success(f"✅ Group {model_name[-1]} model loaded successfully!")
-                    break
-                except UnicodeDecodeError:
-                    continue
-                except Exception as e:
-                    continue
-
-            if not loaded:
-                st.sidebar.warning(f"⚠️ Could not load model {model_name}")
-
+            with open(model_path, 'rb') as f:
+                models[model_name] = pickle.load(f)
+            st.sidebar.success(f"✅ Group {model_name[-1]} model loaded successfully!")
         except Exception as e:
             st.sidebar.warning(f"⚠️ Group {model_name[-1]} model loading failed: {e}")
 
@@ -471,20 +435,8 @@ def load_feature_info():
         return default_info
 
     try:
-        encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'ISO-8859-1']
-        info = None
-
-        for encoding in encodings_to_try:
-            try:
-                with open(feature_info_path, 'r', encoding=encoding) as f:
-                    info = json.load(f)
-                break
-            except:
-                continue
-
-        if info is None:
-            st.sidebar.warning("⚠️ Could not decode feature_info.json, using default values")
-            return default_info
+        with open(feature_info_path, 'r', encoding='utf-8') as f:
+            info = json.load(f)
 
         if 'group1' in info and 'biochar_categories' in info['group1']:
             categories = info['group1']['biochar_categories']
@@ -511,6 +463,8 @@ def generate_swcc_curve(model, model_type, base_input, suction_range):
         if model_type == 'group1':
             feature_order = ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature', 'Biochar_type_combined']
             features_df = pd.DataFrame([input_data])
+            # Convert Biochar_type_combined to category type
+            features_df['Biochar_type_combined'] = features_df['Biochar_type_combined'].astype('category')
             features_df = features_df[feature_order]
         else:
             feature_order = ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'pH', 'AT', 'CT']
@@ -548,7 +502,10 @@ def batch_predict_group1(model, data_df, feature_info):
                 input_data['Biochar_type_combined'] = '农业废弃物'
 
             feature_order = ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature', 'Biochar_type_combined']
-            features_df = pd.DataFrame([input_data])[feature_order]
+            features_df = pd.DataFrame([input_data])
+            # Convert Biochar_type_combined to category type
+            features_df['Biochar_type_combined'] = features_df['Biochar_type_combined'].astype('category')
+            features_df = features_df[feature_order]
 
             prediction = model.predict(features_df)[0]
             predictions.append(prediction)
@@ -1368,7 +1325,10 @@ def single_point_prediction(models, model_type, model_info, feature_info):
         }
 
         feature_order = ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature', 'Biochar_type_combined']
-        features_df = pd.DataFrame([features_dict])[feature_order]
+        features_df = pd.DataFrame([features_dict])
+        # Convert Biochar_type_combined to category type
+        features_df['Biochar_type_combined'] = features_df['Biochar_type_combined'].astype('category')
+        features_df = features_df[feature_order]
 
         input_data = {
             'suction': float(suction),
@@ -1573,7 +1533,6 @@ def single_point_prediction(models, model_type, model_info, feature_info):
         except Exception as e:
             st.error(f"❌ Prediction failed: {e}")
 
-            # Show more details about the input data that caused the error
             with st.expander("🔍 View Detailed Error Information"):
                 st.write("Input DataFrame:")
                 st.dataframe(features_df)
