@@ -167,13 +167,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Biochar type mapping - Use numeric codes to avoid encoding issues
+# Biochar type mapping - Use Chinese internal names for model compatibility
 BIOCHAR_TYPE_DISPLAY = ["Agricultural waste", "Forestry residue", "Livestock manure", "Municipal sludge", "Other"]
 BIOCHAR_TYPE_INTERNAL = ["农业废弃物", "林业残余物", "畜禽粪便", "城市污泥", "其他"]
-# Numeric codes for model prediction (to avoid Unicode issues in XGBoost)
-BIOCHAR_TYPE_CODES = [0, 1, 2, 3, 4]
-BIOCHAR_TYPE_INTERNAL_TO_CODE = dict(zip(BIOCHAR_TYPE_INTERNAL, BIOCHAR_TYPE_CODES))
-BIOCHAR_TYPE_DISPLAY_TO_CODE = dict(zip(BIOCHAR_TYPE_DISPLAY, BIOCHAR_TYPE_CODES))
 BIOCHAR_TYPE_MAP = dict(zip(BIOCHAR_TYPE_DISPLAY, BIOCHAR_TYPE_INTERNAL))
 BIOCHAR_TYPE_REVERSE_MAP = dict(zip(BIOCHAR_TYPE_INTERNAL, BIOCHAR_TYPE_DISPLAY))
 
@@ -457,6 +453,28 @@ def load_feature_info():
         return default_info
 
 
+def create_features_df_group1(features_dict, biochar_categories):
+    """Create DataFrame for Group 1 with proper categorical type"""
+    feature_order = ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature', 'Biochar_type_combined']
+
+    # Create DataFrame
+    df = pd.DataFrame([features_dict])
+
+    # Convert Biochar_type_combined to categorical with proper categories
+    df['Biochar_type_combined'] = pd.Categorical(
+        df['Biochar_type_combined'],
+        categories=biochar_categories,
+        ordered=False
+    )
+
+    # Ensure all other columns are numeric
+    for col in feature_order:
+        if col != 'Biochar_type_combined':
+            df[col] = pd.to_numeric(df[col])
+
+    return df[feature_order]
+
+
 def generate_swcc_curve(model, model_type, base_input, suction_range):
     """Generate SWCC curve data"""
     predictions = []
@@ -466,13 +484,9 @@ def generate_swcc_curve(model, model_type, base_input, suction_range):
         input_data['suction'] = suction
 
         if model_type == 'group1':
-            feature_order = ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature', 'Biochar_type_combined']
-            features_df = pd.DataFrame([input_data])
-            # Convert Biochar_type_combined to numeric code
-            if 'Biochar_type_combined' in features_df.columns:
-                features_df['Biochar_type_combined'] = features_df['Biochar_type_combined'].map(
-                    BIOCHAR_TYPE_INTERNAL_TO_CODE)
-            features_df = features_df[feature_order]
+            # Use the same categories as training
+            biochar_categories = BIOCHAR_TYPE_INTERNAL
+            features_df = create_features_df_group1(input_data, biochar_categories)
         else:
             feature_order = ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'pH', 'AT', 'CT']
             features_df = pd.DataFrame([input_data])[feature_order]
@@ -486,18 +500,19 @@ def generate_swcc_curve(model, model_type, base_input, suction_range):
 def batch_predict_group1(model, data_df, feature_info):
     """Batch prediction - Group 1"""
     predictions = []
+    biochar_categories = BIOCHAR_TYPE_INTERNAL
 
     for idx, row in data_df.iterrows():
         try:
             biochar_type_raw = str(row.get('Biochar_type_combined', '农业废弃物'))
 
-            # Convert to numeric code
-            if biochar_type_raw in BIOCHAR_TYPE_INTERNAL_TO_CODE:
-                biochar_code = BIOCHAR_TYPE_INTERNAL_TO_CODE[biochar_type_raw]
-            elif biochar_type_raw in BIOCHAR_TYPE_DISPLAY_TO_CODE:
-                biochar_code = BIOCHAR_TYPE_DISPLAY_TO_CODE[biochar_type_raw]
+            # Ensure using Chinese internal name
+            if biochar_type_raw in BIOCHAR_TYPE_DISPLAY:
+                biochar_type = BIOCHAR_TYPE_MAP[biochar_type_raw]
+            elif biochar_type_raw in BIOCHAR_TYPE_INTERNAL:
+                biochar_type = biochar_type_raw
             else:
-                biochar_code = 0  # Default to "农业废弃物"
+                biochar_type = '农业废弃物'  # Default
 
             input_data = {
                 'suction': float(row.get('suction', 0)),
@@ -507,15 +522,14 @@ def batch_predict_group1(model, data_df, feature_info):
                 'dd': float(row.get('dd', 0)),
                 'BC': float(row.get('BC', 0)) / 100.0,
                 'temperature': float(row.get('temperature', 0)),
-                'Biochar_type_combined': biochar_code  # Use numeric code
+                'Biochar_type_combined': biochar_type
             }
 
             if input_data['BC'] == 0:
                 input_data['temperature'] = 0.0
-                input_data['Biochar_type_combined'] = 0  # Default code
+                input_data['Biochar_type_combined'] = '农业废弃物'
 
-            feature_order = ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature', 'Biochar_type_combined']
-            features_df = pd.DataFrame([input_data])[feature_order]
+            features_df = create_features_df_group1(input_data, biochar_categories)
 
             prediction = model.predict(features_df)[0]
             predictions.append(prediction)
@@ -834,7 +848,6 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                 st.markdown('<div class="warning-box">⚠️ Biochar content is 0, biochar type does not exist</div>',
                             unsafe_allow_html=True)
                 biochar_type_internal = "农业废弃物"
-                biochar_code = 0
             else:
                 biochar_type_display = st.selectbox(
                     "Biochar type",
@@ -844,7 +857,6 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                     key="biochar_type_input"
                 )
                 biochar_type_internal = BIOCHAR_TYPE_MAP[biochar_type_display]
-                biochar_code = BIOCHAR_TYPE_DISPLAY_TO_CODE[biochar_type_display]
 
             st.divider()
 
@@ -1042,7 +1054,6 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
         st.session_state['bc'] = bc
         st.session_state['temperature'] = temperature if bc > 0 else 0.0
         st.session_state['biochar_type_internal'] = biochar_type_internal if bc > 0 else "农业废弃物"
-        st.session_state['biochar_code'] = biochar_code if bc > 0 else 0
     else:
         st.session_state['suction'] = suction
         st.session_state['clay'] = clay
@@ -1320,11 +1331,11 @@ def single_point_prediction(models, model_type, model_info, feature_info):
 
     if model_type == 'group1':
         temperature = st.session_state.get('temperature', 500.0)
-        biochar_code = st.session_state.get('biochar_code', 0)
+        biochar_type_internal = st.session_state.get('biochar_type_internal', "农业废弃物")
 
         if bc == 0:
             temperature = 0.0
-            biochar_code = 0
+            biochar_type_internal = "农业废弃物"
 
         features_dict = {
             'suction': float(suction),
@@ -1334,11 +1345,12 @@ def single_point_prediction(models, model_type, model_info, feature_info):
             'dd': float(dd),
             'BC': float(bc),
             'temperature': float(temperature),
-            'Biochar_type_combined': biochar_code  # Use numeric code
+            'Biochar_type_combined': biochar_type_internal
         }
 
-        feature_order = ['suction', 'clay', 'silt', 'sand', 'dd', 'BC', 'temperature', 'Biochar_type_combined']
-        features_df = pd.DataFrame([features_dict])[feature_order]
+        # Use the proper DataFrame creation function with categorical type
+        biochar_categories = BIOCHAR_TYPE_INTERNAL
+        features_df = create_features_df_group1(features_dict, biochar_categories)
 
         input_data = {
             'suction': float(suction),
@@ -1348,7 +1360,7 @@ def single_point_prediction(models, model_type, model_info, feature_info):
             'dd': float(dd),
             'BC': float(bc),
             'temperature': float(temperature),
-            'Biochar_type_combined': st.session_state.get('biochar_type_internal', "农业废弃物")
+            'Biochar_type_combined': biochar_type_internal
         }
 
     else:
@@ -1397,6 +1409,9 @@ def single_point_prediction(models, model_type, model_info, feature_info):
                 st.dataframe(features_df)
                 st.write("Data types:")
                 st.write(features_df.dtypes)
+                if model_type == 'group1':
+                    st.write("Biochar type (internal):", biochar_type_internal)
+                    st.write("Biochar categories:", BIOCHAR_TYPE_INTERNAL)
 
             # Prediction
             prediction = model.predict(features_df)[0]
@@ -1558,7 +1573,8 @@ def single_point_prediction(models, model_type, model_info, feature_info):
                 st.write(features_df.dtypes)
                 st.write("Model type:", model_type)
                 if model_type == 'group1':
-                    st.write("Biochar code used:", biochar_code)
+                    st.write("Biochar type used:", biochar_type_internal)
+                    st.write("Biochar categories:", BIOCHAR_TYPE_INTERNAL)
                 import traceback
                 st.code(traceback.format_exc())
 
