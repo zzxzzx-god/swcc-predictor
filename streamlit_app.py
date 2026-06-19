@@ -10,7 +10,6 @@ import warnings
 from scipy.optimize import curve_fit
 import json
 import os
-import sys
 
 warnings.filterwarnings('ignore')
 
@@ -167,11 +166,22 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Biochar type mapping - Use Chinese internal names for model compatibility
-BIOCHAR_TYPE_DISPLAY = ["Agricultural waste", "Forestry residue", "Livestock manure", "Municipal sludge", "Other"]
-BIOCHAR_TYPE_INTERNAL = ["农业废弃物", "林业残余物", "畜禽粪便", "城市污泥", "其他"]
-BIOCHAR_TYPE_MAP = dict(zip(BIOCHAR_TYPE_DISPLAY, BIOCHAR_TYPE_INTERNAL))
-BIOCHAR_TYPE_REVERSE_MAP = dict(zip(BIOCHAR_TYPE_INTERNAL, BIOCHAR_TYPE_DISPLAY))
+# Biochar type mapping - Use Chinese internal names (model compatible), display with English in parentheses
+BIOCHAR_TYPES = [
+    ("农业废弃物", "Agricultural waste"),
+    ("林业残余物", "Forestry residue"),
+    ("畜禽粪便", "Livestock manure"),
+    ("城市污泥", "Municipal sludge"),
+    ("其他", "Other")
+]
+# For display: show "中文 (English)"
+BIOCHAR_TYPE_DISPLAY = [f"{cn} ({en})" for cn, en in BIOCHAR_TYPES]
+# Internal values (Chinese) for model
+BIOCHAR_TYPE_INTERNAL = [cn for cn, en in BIOCHAR_TYPES]
+# Mapping from display to internal
+BIOCHAR_DISPLAY_TO_INTERNAL = dict(zip(BIOCHAR_TYPE_DISPLAY, BIOCHAR_TYPE_INTERNAL))
+# Mapping from internal to display
+BIOCHAR_INTERNAL_TO_DISPLAY = dict(zip(BIOCHAR_TYPE_INTERNAL, BIOCHAR_TYPE_DISPLAY))
 
 
 # VG model function definition
@@ -441,9 +451,11 @@ def load_feature_info():
 
         if 'group1' in info and 'biochar_categories' in info['group1']:
             categories = info['group1']['biochar_categories']
-            if any(cat in categories for cat in BIOCHAR_TYPE_DISPLAY):
+            # Ensure categories are Chinese internal values
+            if not categories or len(categories) == 0:
                 info['group1']['biochar_categories'] = BIOCHAR_TYPE_INTERNAL.copy()
-            elif not categories or len(categories) == 0:
+            elif any(cat not in BIOCHAR_TYPE_INTERNAL for cat in categories):
+                # If categories are not Chinese, use defaults
                 info['group1']['biochar_categories'] = BIOCHAR_TYPE_INTERNAL.copy()
 
         return info
@@ -460,6 +472,18 @@ def create_features_df_group1(features_dict, biochar_categories):
     # Create DataFrame
     df = pd.DataFrame([features_dict])
 
+    # Ensure Biochar_type_combined is a string and in the correct category
+    if 'Biochar_type_combined' in df.columns:
+        # Convert to string
+        df['Biochar_type_combined'] = df['Biochar_type_combined'].astype(str)
+        # If the value is a display format (contains parentheses), extract the Chinese part
+        for display_val, internal_val in BIOCHAR_DISPLAY_TO_INTERNAL.items():
+            df['Biochar_type_combined'] = df['Biochar_type_combined'].replace(display_val, internal_val)
+        # Default to first category if not found
+        df['Biochar_type_combined'] = df['Biochar_type_combined'].apply(
+            lambda x: x if x in biochar_categories else biochar_categories[0]
+        )
+
     # Convert Biochar_type_combined to categorical with proper categories
     df['Biochar_type_combined'] = pd.Categorical(
         df['Biochar_type_combined'],
@@ -472,6 +496,7 @@ def create_features_df_group1(features_dict, biochar_categories):
         if col != 'Biochar_type_combined':
             df[col] = pd.to_numeric(df[col])
 
+    # Return only the feature columns in the correct order
     return df[feature_order]
 
 
@@ -484,7 +509,6 @@ def generate_swcc_curve(model, model_type, base_input, suction_range):
         input_data['suction'] = suction
 
         if model_type == 'group1':
-            # Use the same categories as training
             biochar_categories = BIOCHAR_TYPE_INTERNAL
             features_df = create_features_df_group1(input_data, biochar_categories)
         else:
@@ -506,9 +530,9 @@ def batch_predict_group1(model, data_df, feature_info):
         try:
             biochar_type_raw = str(row.get('Biochar_type_combined', '农业废弃物'))
 
-            # Ensure using Chinese internal name
-            if biochar_type_raw in BIOCHAR_TYPE_DISPLAY:
-                biochar_type = BIOCHAR_TYPE_MAP[biochar_type_raw]
+            # Extract internal value if display format is used
+            if biochar_type_raw in BIOCHAR_DISPLAY_TO_INTERNAL:
+                biochar_type = BIOCHAR_DISPLAY_TO_INTERNAL[biochar_type_raw]
             elif biochar_type_raw in BIOCHAR_TYPE_INTERNAL:
                 biochar_type = biochar_type_raw
             else:
@@ -849,21 +873,24 @@ def display_single_prediction_interface(models, model_type, model_info, feature_
                             unsafe_allow_html=True)
                 biochar_type_internal = "农业废弃物"
             else:
-                biochar_type_display = st.selectbox(
+                # Show display options with Chinese and English
+                selected_display = st.selectbox(
                     "Biochar type",
                     options=BIOCHAR_TYPE_DISPLAY,
                     index=0,
                     help="Select the raw material type of biochar",
                     key="biochar_type_input"
                 )
-                biochar_type_internal = BIOCHAR_TYPE_MAP[biochar_type_display]
+                # Get internal Chinese value
+                biochar_type_internal = BIOCHAR_DISPLAY_TO_INTERNAL[selected_display]
 
             st.divider()
 
             st.markdown("### 📋 Current Parameter Overview")
 
-            biochar_type_display_value = BIOCHAR_TYPE_REVERSE_MAP.get(biochar_type_internal,
-                                                                      biochar_type_internal) if bc > 0 else "N/A"
+            # Get display value (with English in parentheses)
+            biochar_type_display_value = BIOCHAR_INTERNAL_TO_DISPLAY.get(biochar_type_internal,
+                                                                         biochar_type_internal) if bc > 0 else "N/A"
 
             param_summary = pd.DataFrame({
                 'Parameter': ['Suction', 'Clay', 'Silt', 'Sand', 'Dry density', 'BC content', 'Pyrolysis temp',
@@ -1091,8 +1118,8 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
     if model_type == 'group1':
         st.markdown("""
         - **Group 1 required columns:** suction, clay, silt, sand, dd, BC, temperature, Biochar_type_combined
-        - **Notes:** BC column is in percentage (e.g., 5 means 5%), Biochar_type_combined is biochar type
-        - **Biochar type options:** Agricultural waste, Forestry residue, Livestock manure, Municipal sludge, Other
+        - **Notes:** BC column is in percentage (e.g., 5 means 5%)
+        - **Biochar type can be:** Chinese (e.g., 农业废弃物) or Display format (e.g., 农业废弃物 (Agricultural waste))
         """)
     else:
         st.markdown("""
@@ -1131,7 +1158,8 @@ def display_batch_prediction_interface(models, model_type, model_info, feature_i
                 'dd': [1.45, 1.5, 1.4],
                 'BC': [5.0, 10.0, 0.0],
                 'temperature': [500, 600, 0],
-                'Biochar_type_combined': ['Agricultural waste', 'Forestry residue', 'Agricultural waste']
+                'Biochar_type_combined': ['农业废弃物 (Agricultural waste)', '林业残余物 (Forestry residue)',
+                                          '农业废弃物 (Agricultural waste)']
             }
             template_df = pd.DataFrame(template_data)
             csv = template_df.to_csv(index=False).encode('utf-8')
@@ -1348,7 +1376,6 @@ def single_point_prediction(models, model_type, model_info, feature_info):
             'Biochar_type_combined': biochar_type_internal
         }
 
-        # Use the proper DataFrame creation function with categorical type
         biochar_categories = BIOCHAR_TYPE_INTERNAL
         features_df = create_features_df_group1(features_dict, biochar_categories)
 
@@ -1403,16 +1430,6 @@ def single_point_prediction(models, model_type, model_info, feature_info):
 
     with st.spinner("Performing prediction calculation..."):
         try:
-            # Display input for debugging
-            with st.expander("🔍 Debug - Input Data"):
-                st.write("Features DataFrame:")
-                st.dataframe(features_df)
-                st.write("Data types:")
-                st.write(features_df.dtypes)
-                if model_type == 'group1':
-                    st.write("Biochar type (internal):", biochar_type_internal)
-                    st.write("Biochar categories:", BIOCHAR_TYPE_INTERNAL)
-
             # Prediction
             prediction = model.predict(features_df)[0]
 
@@ -1481,7 +1498,8 @@ def single_point_prediction(models, model_type, model_info, feature_info):
                         display_value = f"{value:.1f}"
                         unit = "-"
                     elif key == 'Biochar_type_combined':
-                        display_value = BIOCHAR_TYPE_REVERSE_MAP.get(value, value)
+                        # Display Chinese with English in parentheses
+                        display_value = BIOCHAR_INTERNAL_TO_DISPLAY.get(value, value)
                         unit = "type"
                     else:
                         display_value = str(value)
